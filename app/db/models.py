@@ -90,6 +90,8 @@ class Trade(Base):
     rating: Mapped[Optional[int]] = mapped_column(Integer)
     tags: Mapped[Optional[str]] = mapped_column(Text)
     chart_image_url: Mapped[Optional[str]] = mapped_column(Text)
+    review_done: Mapped[bool] = mapped_column(default=False, nullable=False)
+    reviewed_at: Mapped[Optional[str]] = mapped_column(String)
     opened_at: Mapped[str] = mapped_column(String, nullable=False)
     closed_at: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())

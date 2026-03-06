@@ -76,6 +76,8 @@ def create_trade_with_fills(db: Session, payload: TradeCreate) -> Trade:
         rating=payload.rating,
         tags=payload.tags,
         chart_image_url=payload.chart_image_url,
+        review_done=bool(payload.review_done),
+        reviewed_at=payload.reviewed_at,
         opened_at=buy_input.date,
         closed_at=sell_input.date if sell_input is not None else "",
         created_at=_utc_now_iso(),

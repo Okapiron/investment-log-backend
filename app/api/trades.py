@@ -51,6 +51,8 @@ def _to_trade_read(trade: Trade) -> TradeRead:
         rating=trade.rating,
         tags=trade.tags,
         chart_image_url=trade.chart_image_url,
+        review_done=bool(trade.review_done),
+        reviewed_at=trade.reviewed_at,
         opened_at=trade.opened_at,
         closed_at=trade.closed_at or None,
         created_at=trade.created_at,
@@ -132,6 +134,10 @@ def _is_open_trade(item: TradeRead) -> bool:
     return item.closed_at is None
 
 
+def _is_pending_review(item: TradeRead) -> bool:
+    return (not _is_open_trade(item)) and bool(item.closed_at) and (not bool(item.review_done))
+
+
 def _profit_value(item: TradeRead) -> Optional[float]:
     if item.profit_currency == "USD":
         return None if item.profit_usd is None else float(item.profit_usd)
@@ -182,6 +188,7 @@ def list_trades(
     rating: Optional[str] = None,
     tag: Optional[str] = None,
     pos: str = "all",
+    review: str = "all",
     win_only: Optional[str] = None,
     loss_only: Optional[str] = None,
     win_from: Optional[str] = None,
@@ -227,6 +234,7 @@ def list_trades(
     tag_values = [v.lower() for v in tag_values_raw]
     has_unset_tag = "未設定" in tag_values_raw
     pos_value = pos if pos in {"all", "open", "closed"} else "all"
+    review_value = review if review in {"all", "pending", "done"} else "all"
     win_only_enabled = win_only == "1"
     loss_only_enabled = loss_only == "1"
 
@@ -235,6 +243,10 @@ def list_trades(
         if pos_value == "open" and not _is_open_trade(item):
             continue
         if pos_value == "closed" and _is_open_trade(item):
+            continue
+        if review_value == "pending" and not _is_pending_review(item):
+            continue
+        if review_value == "done" and not bool(item.review_done):
             continue
 
         tags = [v.strip() for v in (item.tags or "").split(",") if v.strip()]
@@ -340,8 +352,12 @@ def list_trades(
     roi_count = 0
     rating_sum = 0.0
     rating_count = 0
+    pending_review_count = 0
 
     for item in sorted_items:
+        if _is_pending_review(item):
+            pending_review_count += 1
+
         profit = _profit_value(item)
         if profit is not None:
             if item.profit_currency == "USD":
@@ -372,6 +388,7 @@ def list_trades(
         avg_holding_days=(holding_sum / float(holding_count)) if holding_count > 0 else None,
         avg_roi_pct=(roi_sum / float(roi_count)) if roi_count > 0 else None,
         avg_rating=(rating_sum / float(rating_count)) if rating_count > 0 else None,
+        pending_review_count=pending_review_count,
     )
 
     return TradeListRead(items=page_items, total=total, limit=limit, offset=offset, stats=stats)

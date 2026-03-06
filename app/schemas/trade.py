@@ -31,6 +31,8 @@ class TradeCreate(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     tags: Optional[str] = None
     chart_image_url: Optional[str] = None
+    review_done: Optional[bool] = False
+    reviewed_at: Optional[str] = None
     fills: list[FillInput]
 
 
@@ -44,6 +46,8 @@ class TradeUpdate(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     tags: Optional[str] = None
     chart_image_url: Optional[str] = None
+    review_done: Optional[bool] = None
+    reviewed_at: Optional[str] = None
     fills: Optional[list[FillInput]] = None
 
 
@@ -58,6 +62,8 @@ class TradeRead(BaseModel):
     rating: Optional[int]
     tags: Optional[str]
     chart_image_url: Optional[str]
+    review_done: bool
+    reviewed_at: Optional[str]
     opened_at: str
     closed_at: Optional[str]
     created_at: str
@@ -77,6 +83,7 @@ class TradeListStatsRead(BaseModel):
     avg_holding_days: Optional[float]
     avg_roi_pct: Optional[float]
     avg_rating: Optional[float]
+    pending_review_count: int
 
 
 class TradeListRead(BaseModel):

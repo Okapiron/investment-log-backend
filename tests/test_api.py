@@ -189,6 +189,8 @@ def test_trades_crud_flow(client):
     assert trade["profit_usd"] is None
     assert trade["profit_currency"] == "JPY"
     assert trade["holding_days"] == 5
+    assert trade["review_done"] is False
+    assert trade["reviewed_at"] is None
 
     listed = client.get("/api/v1/trades", params={"market": "JP", "symbol": "720"})
     assert listed.status_code == 200
@@ -197,6 +199,7 @@ def test_trades_crud_flow(client):
     assert list_body["limit"] == 20
     assert list_body["offset"] == 0
     assert "stats" in list_body
+    assert "pending_review_count" in list_body["stats"]
     assert list_body["items"][0]["id"] == trade_id
 
     detail = client.get(f"/api/v1/trades/{trade_id}")
@@ -308,3 +311,40 @@ def test_trades_list_pagination_limit_offset(client):
     assert body["offset"] == 1
     assert body["total"] == 3
     assert len(body["items"]) == 1
+
+
+def test_trades_review_filter_and_update(client):
+    created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "R1",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 100, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-03-02", "price": 110, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+
+    pending = client.get("/api/v1/trades", params={"review": "pending"})
+    assert pending.status_code == 200
+    pending_body = pending.json()
+    assert pending_body["total"] == 1
+    assert pending_body["stats"]["pending_review_count"] == 1
+
+    updated = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={"review_done": True, "reviewed_at": "2026-03-05"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["review_done"] is True
+    assert updated.json()["reviewed_at"] == "2026-03-05"
+
+    done = client.get("/api/v1/trades", params={"review": "done"})
+    assert done.status_code == 200
+    done_body = done.json()
+    assert done_body["total"] == 1
+    assert done_body["items"][0]["review_done"] is True
+    assert done_body["stats"]["pending_review_count"] == 0
