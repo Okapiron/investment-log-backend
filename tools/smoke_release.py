@@ -39,6 +39,10 @@ def _request_json(url: str) -> tuple[int, dict, dict]:
         except Exception:
             payload = {}
         return int(e.code), payload, headers
+    except urllib.error.URLError as e:
+        return 0, {"detail": f"request failed: {e.reason}"}, {}
+    except Exception as e:
+        return 0, {"detail": f"unexpected error: {e}"}, {}
 
 
 def _check(
