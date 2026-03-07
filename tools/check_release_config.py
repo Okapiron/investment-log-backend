@@ -21,6 +21,10 @@ def main() -> int:
             errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
         if _is_empty(settings.supabase_jwt_secret):
             errors.append("SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true")
+        if _is_empty(settings.ops_alert_target):
+            errors.append("OPS_ALERT_TARGET is required when AUTH_ENABLED=true")
+        if _is_empty(settings.db_backup_strategy):
+            errors.append("DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true")
         if settings.invite_code_required and _is_empty(settings.supabase_service_role_key):
             warnings.append("SUPABASE_SERVICE_ROLE_KEY is empty (auth user delete will be skipped)")
 

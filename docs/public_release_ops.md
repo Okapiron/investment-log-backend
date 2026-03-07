@@ -19,6 +19,10 @@
   - 例: `https://investment-log-frontend.vercel.app,http://localhost:5173`
 - `RATE_LIMIT_ENABLED=true`
 - `RATE_LIMIT_PER_MINUTE=120`
+- `OPS_ALERT_TARGET`:
+  - 例: `slack:#tradetrace-alerts` / `email:ops@example.com`
+- `DB_BACKUP_STRATEGY`:
+  - 例: `render-managed-daily`
 
 ### 1.2 Frontend (Vercel)
 - `VITE_API_BASE`:
@@ -95,6 +99,7 @@ cd backend
    - 招待コードありでログイン成功
    - `Trades` 作成/編集/削除
    - `Settings` でエクスポート可能
+   - `GET /health/ready` が `200` を返す
 7. 招待ユーザーへ URL とコードを配布
 
 ## 6. スモークチェック
@@ -102,6 +107,7 @@ cd backend
 ### 6.1 認証
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する
 - 無効コードでは API が 403 を返す
+- `GET /health/ready` が `{"status":"ok","db":"ok"}` を返す
 
 ### 6.2 データ分離
 - Aユーザーで作成したトレードが Bユーザーで見えない

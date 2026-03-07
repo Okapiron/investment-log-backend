@@ -41,6 +41,14 @@ class Settings(BaseSettings):
         default=120,
         validation_alias=AliasChoices("RATE_LIMIT_PER_MINUTE", "APP_RATE_LIMIT_PER_MINUTE"),
     )
+    ops_alert_target: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPS_ALERT_TARGET", "APP_OPS_ALERT_TARGET"),
+    )
+    db_backup_strategy: str = Field(
+        default="",
+        validation_alias=AliasChoices("DB_BACKUP_STRATEGY", "APP_DB_BACKUP_STRATEGY"),
+    )
 
     @model_validator(mode="after")
     def normalize_database_url(self):

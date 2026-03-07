@@ -26,7 +26,12 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path or ""
         if not path.startswith(self.api_prefix):
             return await call_next(request)
-        if path == f"{self.api_prefix}/health" or path == "/health":
+        if path in {
+            "/health",
+            "/health/ready",
+            f"{self.api_prefix}/health",
+            f"{self.api_prefix}/health/ready",
+        }:
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"

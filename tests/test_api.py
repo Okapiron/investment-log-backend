@@ -35,6 +35,18 @@ def test_openapi(client):
     assert "/api/v1/trades" in data["paths"]
 
 
+def test_health_endpoints(client):
+    res = client.get("/health")
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+
+    ready = client.get("/health/ready")
+    assert ready.status_code == 200
+    body = ready.json()
+    assert body["status"] == "ok"
+    assert body["db"] == "ok"
+
+
 def test_trades_requires_auth_when_enabled(client):
     settings.auth_enabled = True
     settings.supabase_jwt_secret = "test-secret"
