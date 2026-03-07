@@ -88,6 +88,25 @@ cd backend
 - 7日で失効
 - SNS等に公開しない
 
+### 4.4 一覧確認
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py list --status all --limit 50
+```
+
+### 4.5 無効化
+コード文字列で無効化:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py revoke --code AB12CD34EF
+```
+
+ID指定で無効化:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py revoke --id 12
+```
+
 ## 5. リリース手順 (推奨順)
 1. backend の env を更新
 2. frontend の env を更新
