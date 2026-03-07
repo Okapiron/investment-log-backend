@@ -317,7 +317,7 @@ def test_trades_list_pagination_limit_offset(client):
     assert len(body["items"]) == 1
 
 
-def test_trades_review_filter_and_update(client):
+def test_trades_status_filter_and_update(client):
     created = client.post(
         "/api/v1/trades",
         json={
@@ -344,11 +344,11 @@ def test_trades_review_filter_and_update(client):
     )
     assert open_created.status_code == 201
 
-    pending = client.get("/api/v1/trades", params={"review": "pending"})
+    pending = client.get("/api/v1/trades", params={"status": "pending"})
     assert pending.status_code == 200
     pending_body = pending.json()
-    assert pending_body["total"] == 2
-    assert pending_body["stats"]["pending_review_count"] == 2
+    assert pending_body["total"] == 1
+    assert pending_body["stats"]["pending_review_count"] == 1
 
     updated = client.patch(
         f"/api/v1/trades/{trade_id}",
@@ -358,7 +358,7 @@ def test_trades_review_filter_and_update(client):
     assert updated.json()["review_done"] is True
     assert updated.json()["reviewed_at"] == "2026-03-05"
 
-    done = client.get("/api/v1/trades", params={"review": "done"})
+    done = client.get("/api/v1/trades", params={"status": "complete"})
     assert done.status_code == 200
     done_body = done.json()
     assert done_body["total"] == 1
@@ -517,3 +517,59 @@ def test_trades_name_sort_groups_jp_and_us(client):
     desc_items = desc.json()["items"]
     assert [x["market"] for x in desc_items] == ["US", "US", "JP", "JP"]
     assert [x["symbol"] for x in desc_items] == ["MSFT", "AAPL", "7203", "6479"]
+
+
+def test_trades_status_sort(client):
+    complete = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "CMP",
+            "fills": [
+                {"side": "buy", "date": "2026-06-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-06-02", "price": 1100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert complete.status_code == 201
+    complete_id = complete.json()["id"]
+    review_done = client.patch(
+        f"/api/v1/trades/{complete_id}",
+        json={"review_done": True, "reviewed_at": "2026-06-03"},
+    )
+    assert review_done.status_code == 200
+
+    pending = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "PND",
+            "fills": [
+                {"side": "buy", "date": "2026-06-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-06-02", "price": 900, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert pending.status_code == 201
+
+    open_trade = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "US",
+            "symbol": "OPN",
+            "fills": [
+                {"side": "buy", "date": "2026-06-01", "price": 100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert open_trade.status_code == 201
+
+    asc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "asc", "limit": 20, "offset": 0})
+    assert asc.status_code == 200
+    asc_symbols = [x["symbol"] for x in asc.json()["items"]]
+    assert asc_symbols == ["CMP", "PND", "OPN"]
+
+    desc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "desc", "limit": 20, "offset": 0})
+    assert desc.status_code == 200
+    desc_symbols = [x["symbol"] for x in desc.json()["items"]]
+    assert desc_symbols == ["OPN", "PND", "CMP"]

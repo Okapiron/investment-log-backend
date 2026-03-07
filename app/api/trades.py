@@ -110,7 +110,7 @@ def _normalize_sort(value: str) -> str:
     v = (value or "").strip()
     if v in legacy_map:
         return legacy_map[v]
-    allowed = {"buy_date", "sell_date", "name", "profit", "roi", "holding", "rating"}
+    allowed = {"status", "buy_date", "sell_date", "name", "profit", "roi", "holding", "rating"}
     return v if v in allowed else "sell_date"
 
 
@@ -136,7 +136,15 @@ def _is_open_trade(item: TradeRead) -> bool:
 
 
 def _is_pending_review(item: TradeRead) -> bool:
-    return not bool(item.review_done)
+    return _trade_status(item) == "pending"
+
+
+def _trade_status(item: TradeRead) -> str:
+    if _is_open_trade(item):
+        return "open"
+    if bool(item.review_done):
+        return "complete"
+    return "pending"
 
 
 def _profit_value(item: TradeRead) -> Optional[float]:
@@ -217,6 +225,7 @@ def list_trades(
     market: Optional[str] = None,
     rating: Optional[str] = None,
     tag: Optional[str] = None,
+    status: str = "all",
     pos: str = "all",
     review: str = "all",
     win_only: Optional[str] = None,
@@ -265,18 +274,34 @@ def list_trades(
     has_unset_tag = "未設定" in tag_values_raw
     pos_value = pos if pos in {"all", "open", "closed"} else "all"
     review_value = review if review in {"all", "pending", "done"} else "all"
+    status_value = status if status in {"all", "open", "pending", "complete"} else "all"
+    if status_value == "all":
+        # legacy compatibility for old URLs/clients
+        if pos_value == "open":
+            status_value = "open"
+        elif pos_value == "closed" and review_value == "pending":
+            status_value = "pending"
+        elif pos_value == "closed" and review_value == "done":
+            status_value = "complete"
+        elif review_value == "pending":
+            status_value = "pending"
+        elif review_value == "done":
+            status_value = "complete"
+        elif pos_value == "closed":
+            status_value = "closed"
     win_only_enabled = win_only == "1"
     loss_only_enabled = loss_only == "1"
 
     filtered = []
     for item in trades:
-        if pos_value == "open" and not _is_open_trade(item):
+        trade_status = _trade_status(item)
+        if status_value == "open" and trade_status != "open":
             continue
-        if pos_value == "closed" and _is_open_trade(item):
+        if status_value == "pending" and trade_status != "pending":
             continue
-        if review_value == "pending" and not _is_pending_review(item):
+        if status_value == "complete" and trade_status != "complete":
             continue
-        if review_value == "done" and not bool(item.review_done):
+        if status_value == "closed" and trade_status == "open":
             continue
 
         tags = [v.strip() for v in (item.tags or "").split(",") if v.strip()]
@@ -341,6 +366,9 @@ def list_trades(
     indexed = list(enumerate(filtered))
 
     def sort_value(item: TradeRead):
+        if normalized_sort == "status":
+            status_rank = {"complete": 0, "pending": 1, "open": 2}.get(_trade_status(item), 3)
+            return (status_rank, item.opened_at or item.created_at)
         if normalized_sort == "buy_date":
             return item.opened_at or item.created_at
         if normalized_sort == "sell_date":
@@ -384,7 +412,7 @@ def list_trades(
     pending_review_count = 0
 
     for item in sorted_items:
-        if _is_pending_review(item):
+        if _trade_status(item) == "pending":
             pending_review_count += 1
 
         profit = _profit_value(item)
