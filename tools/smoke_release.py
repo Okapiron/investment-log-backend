@@ -207,6 +207,12 @@ def main() -> int:
             verbose=verbose,
         )
         ok &= _check(
+            bool(str(runtime_body.get("server_time_utc") or "").strip()),
+            "settings/runtime includes server time",
+            checks=checks,
+            verbose=verbose,
+        )
+        ok &= _check(
             bool(str(runtime_body.get("app_version") or "").strip()),
             "settings/runtime includes app version",
             checks=checks,

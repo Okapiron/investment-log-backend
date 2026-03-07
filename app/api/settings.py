@@ -84,6 +84,7 @@ def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depend
             "status": status,
             "db": db_status,
             "release_status": release_status,
+            "server_time_utc": datetime.now(timezone.utc).isoformat(),
             "app_version": str(settings.app_version or "").strip() or "unknown",
             "auth_enabled": bool(settings.auth_enabled),
             "invite_code_required": bool(settings.invite_code_required),
