@@ -175,11 +175,14 @@ def export_my_data(
 @router.delete("/me")
 def delete_my_account_data(
     confirm: bool = Query(default=False),
+    confirm_text: str = Query(default=""),
     db: Session = Depends(get_session),
     claims: dict = Depends(require_invited_auth),
 ):
     if not confirm:
         raise HTTPException(status_code=400, detail="confirm=true is required")
+    if str(confirm_text or "").strip().upper() != "DELETE":
+        raise HTTPException(status_code=400, detail="confirm_text=DELETE is required")
 
     scoped_user_id = _scoped_user_id(claims)
     if scoped_user_id is None:

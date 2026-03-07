@@ -301,7 +301,18 @@ def test_settings_export_and_delete_are_user_scoped(client):
     delete_without_confirm = client.delete("/api/v1/settings/me", headers=headers_a)
     assert delete_without_confirm.status_code == 400
 
-    delete_a = client.delete("/api/v1/settings/me", params={"confirm": "true"}, headers=headers_a)
+    delete_without_confirm_text = client.delete(
+        "/api/v1/settings/me",
+        params={"confirm": "true"},
+        headers=headers_a,
+    )
+    assert delete_without_confirm_text.status_code == 400
+
+    delete_a = client.delete(
+        "/api/v1/settings/me",
+        params={"confirm": "true", "confirm_text": "DELETE"},
+        headers=headers_a,
+    )
     assert delete_a.status_code == 200
     assert delete_a.json()["deleted_trades"] == 1
     assert delete_a.json()["anonymized_invites"] == 1
