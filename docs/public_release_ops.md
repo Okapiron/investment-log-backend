@@ -19,6 +19,7 @@
   - 例: `https://investment-log-frontend.vercel.app,http://localhost:5173`
 - `RATE_LIMIT_ENABLED=true`
 - `RATE_LIMIT_PER_MINUTE=120`
+  - auth有効時はユーザー単位を優先し、未認証時はIP単位で制限
 - `OPS_ALERT_TARGET`:
   - 例: `slack:#tradetrace-alerts` / `email:ops@example.com`
 - `DB_BACKUP_STRATEGY`:

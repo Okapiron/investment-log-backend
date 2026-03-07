@@ -5,6 +5,9 @@ from collections import defaultdict
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.config import settings
+from app.core.jwt_utils import decode_and_verify_hs256
+
 
 class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, max_per_minute: int = 120, api_prefix: str = "/api/v1"):
@@ -22,6 +25,28 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
         self._counts.clear()
         self._minute = cur
 
+    def _resolve_principal_key(self, request) -> str:
+        if settings.auth_enabled:
+            secret = str(settings.supabase_jwt_secret or "").strip()
+            auth_header = str(request.headers.get("authorization") or "").strip()
+            if secret and auth_header.lower().startswith("bearer "):
+                token = auth_header[7:].strip()
+                if token:
+                    try:
+                        claims = decode_and_verify_hs256(token, secret)
+                    except ValueError:
+                        claims = {}
+                    sub = str((claims or {}).get("sub") or "").strip()
+                    if sub:
+                        return f"user:{sub}"
+
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip() or "unknown"
+        else:
+            client_ip = request.client.host if request.client else "unknown"
+        return f"ip:{client_ip}"
+
     async def dispatch(self, request, call_next):
         path = request.url.path or ""
         method = (request.method or "").upper()
@@ -38,16 +63,12 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
         }:
             return await call_next(request)
 
-        forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
-        if forwarded_for:
-            client_ip = forwarded_for.split(",")[0].strip() or "unknown"
-        else:
-            client_ip = request.client.host if request.client else "unknown"
-        key = (client_ip, self._minute)
+        principal_key = self._resolve_principal_key(request)
+        key = (principal_key, self._minute)
 
         with self._lock:
             self._rollover_if_needed()
-            key = (client_ip, self._minute)
+            key = (principal_key, self._minute)
             self._counts[key] += 1
             if self._counts[key] > self.max_per_minute:
                 return JSONResponse(
