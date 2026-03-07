@@ -403,7 +403,7 @@ def test_trade_detail_update_can_close_open_trade_and_keep_review_pending(client
     assert body["profit_jpy"] == 1000
 
 
-def test_trade_detail_update_rejects_partial_sell_and_reopen(client):
+def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
     open_created = client.post(
         "/api/v1/trades",
         json={
@@ -450,7 +450,11 @@ def test_trade_detail_update_rejects_partial_sell_and_reopen(client):
             "buy_qty": 1,
         },
     )
-    assert reopen.status_code == 422
+    assert reopen.status_code == 200
+    reopen_body = reopen.json()
+    assert reopen_body["is_open"] is True
+    assert reopen_body["closed_at"] is None
+    assert reopen_body["profit_jpy"] is None
 
     mixed_review = client.patch(
         f"/api/v1/trades/{closed_id}",

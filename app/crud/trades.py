@@ -174,7 +174,7 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
             sell_fill.qty = sell_input.qty
             sell_fill.fee = sell_input.fee or 0
         elif sell_fill is not None:
-            raise HTTPException(status_code=422, detail="reopening a closed trade is not supported")
+            db.delete(sell_fill)
 
         trade.opened_at = buy_input.date
         trade.closed_at = sell_input.date if sell_input is not None else ""
