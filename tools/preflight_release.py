@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run(cmd: list[str]) -> int:
+    print(f"$ {' '.join(cmd)}", flush=True)
+    completed = subprocess.run(cmd, cwd=str(ROOT))
+    return int(completed.returncode)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run release preflight checks.")
+    parser.add_argument("--base", default="http://127.0.0.1:8000", help="backend base URL for smoke check")
+    parser.add_argument(
+        "--expect-auth-required",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="expect trades endpoint to require auth in smoke check (default: true)",
+    )
+    args = parser.parse_args()
+
+    explicit_python = str(os.getenv("PREFLIGHT_PYTHON") or "").strip()
+    python_cmd = explicit_python or sys.executable
+
+    rc = _run([python_cmd, "tools/check_release_config.py", "--strict"])
+    if rc != 0:
+        return rc
+
+    smoke_cmd = [python_cmd, "tools/smoke_release.py", "--base", str(args.base)]
+    if not args.expect_auth_required:
+        smoke_cmd.append("--no-expect-auth-required")
+    rc = _run(smoke_cmd)
+    if rc != 0:
+        return rc
+
+    print("PREFLIGHT: OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

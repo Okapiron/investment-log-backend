@@ -85,6 +85,12 @@ cd backend
 
 `AUTH_ENABLED=true` で `RATE_LIMIT_ENABLED=false` の場合は warning が出る。
 
+公開前チェック一括実行（推奨）:
+```bash
+cd backend
+.venv/bin/python tools/preflight_release.py --base https://<render-backend-host>
+```
+
 ## 4. 招待コード運用
 
 ### 4.1 新規発行
