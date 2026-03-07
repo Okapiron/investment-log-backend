@@ -127,6 +127,7 @@ cd backend
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する
 - 無効コードでは API が 403 を返す
 - `GET /health/ready` が `{"status":"ok","db":"ok"}` を返す
+- レスポンスヘッダ `X-Request-ID` が付与される
 
 ### 6.2 データ分離
 - Aユーザーで作成したトレードが Bユーザーで見えない
@@ -141,6 +142,7 @@ cd backend
 - `SUPABASE_SERVICE_ROLE_KEY` 未設定時:
   - アプリデータ削除は実行される
   - Supabase Authユーザー削除はスキップされる
+- 障害調査時は画面のエラーメッセージに出る `request_id` をログ検索キーとして使う
 
 ## 8. ロールバック方針
 - 問題発生時は `AUTH_ENABLED=false` に戻して一時的に従来モードで運用継続

@@ -6,12 +6,14 @@ from sqlalchemy import inspect, text
 
 from app.api import accounts, assets, dashboard, monthly, prices, settings as settings_api, snapshots, trades
 from app.core.config import settings
+from app.core.observability import RequestIdMiddleware
 from app.core.rate_limit import SimpleRateLimitMiddleware
 from app.db.base import Base
 from app.db.session import engine
 
 app = FastAPI(title=settings.app_name)
 logger = logging.getLogger("tradetrace.app")
+app.add_middleware(RequestIdMiddleware)
 
 
 def _parse_cors_origins(raw: str) -> list[str]:

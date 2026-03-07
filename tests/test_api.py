@@ -72,22 +72,26 @@ def test_health_endpoints(client):
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
+    assert str(res.headers.get("x-request-id") or "").strip() != ""
 
     prefixed = client.get("/api/v1/health")
     assert prefixed.status_code == 200
     assert prefixed.json()["status"] == "ok"
+    assert str(prefixed.headers.get("x-request-id") or "").strip() != ""
 
     ready = client.get("/health/ready")
     assert ready.status_code == 200
     body = ready.json()
     assert body["status"] == "ok"
     assert body["db"] == "ok"
+    assert str(ready.headers.get("x-request-id") or "").strip() != ""
 
     prefixed_ready = client.get("/api/v1/health/ready")
     assert prefixed_ready.status_code == 200
     prefixed_body = prefixed_ready.json()
     assert prefixed_body["status"] == "ok"
     assert prefixed_body["db"] == "ok"
+    assert str(prefixed_ready.headers.get("x-request-id") or "").strip() != ""
 
 
 def test_trades_requires_auth_when_enabled(client):
