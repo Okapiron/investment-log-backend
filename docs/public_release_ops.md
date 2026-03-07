@@ -35,6 +35,9 @@
   - 例: `https://<render-backend-host>/api/v1`
 - `VITE_API_TIMEOUT_MS` (任意):
   - 例: `15000`
+- `VITE_APP_VERSION`:
+  - 例: `2026.03.08` / `main-<short-sha>`
+  - `Settings > Runtime` の Frontend Version 表示に使う
 - `VITE_AUTH_ENABLED=true`
 - `VITE_SUPABASE_URL`:
   - 例: `https://<project-ref>.supabase.co`
