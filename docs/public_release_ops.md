@@ -44,10 +44,22 @@ cd frontend
 npm run check:release-env -- --strict
 ```
 
+CI/運用スクリプト向けに JSON 形式で取得:
+```bash
+cd frontend
+node tools/check_release_env.mjs --strict --json
+```
+
 Frontend公開前チェック一括実行:
 ```bash
 cd frontend
 npm run preflight:release
+```
+
+CI/運用スクリプト向けに JSON 形式で取得:
+```bash
+cd frontend
+node tools/preflight_release.mjs --json
 ```
 
 ## 2. Supabase Auth 設定
