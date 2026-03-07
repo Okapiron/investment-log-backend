@@ -65,12 +65,15 @@ def _try_delete_supabase_auth_user(user_id: str) -> tuple[bool, Optional[str]]:
 def get_me(claims: dict = Depends(require_invited_auth)):
     user_id = _scoped_user_id(claims) or "dev-local-user"
     email = str((claims or {}).get("email") or "").strip() or None
-    return {
+    return JSONResponse(
+        {
         "user_id": user_id,
         "email": email,
         "auth_enabled": bool(settings.auth_enabled),
         "invite_code_required": bool(settings.invite_code_required),
-    }
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/export")
@@ -127,7 +130,10 @@ def export_my_data(
         }
         return JSONResponse(
             body,
-            headers={"Content-Disposition": f'attachment; filename="tradetrace_export_{now_tag}.json"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="tradetrace_export_{now_tag}.json"',
+                "Cache-Control": "no-store",
+            },
         )
 
     if clean_format == "csv":
@@ -166,7 +172,10 @@ def export_my_data(
         return Response(
             content=content,
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="tradetrace_export_{now_tag}.csv"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="tradetrace_export_{now_tag}.csv"',
+                "Cache-Control": "no-store",
+            },
         )
 
     raise HTTPException(status_code=422, detail="format must be json or csv")
@@ -210,9 +219,12 @@ def delete_my_account_data(
     db.commit()
 
     deleted_auth_user, auth_delete_error = _try_delete_supabase_auth_user(scoped_user_id)
-    return {
-        "deleted_trades": deleted_count,
-        "anonymized_invites": anonymized_invites,
-        "deleted_auth_user": deleted_auth_user,
-        "auth_delete_error": auth_delete_error,
-    }
+    return JSONResponse(
+        {
+            "deleted_trades": deleted_count,
+            "anonymized_invites": anonymized_invites,
+            "deleted_auth_user": deleted_auth_user,
+            "auth_delete_error": auth_delete_error,
+        },
+        headers={"Cache-Control": "no-store"},
+    )

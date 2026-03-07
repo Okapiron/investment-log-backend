@@ -291,9 +291,11 @@ def test_settings_export_and_delete_are_user_scoped(client):
     assert me_a.status_code == 200
     assert me_a.json()["user_id"] == "user-sa"
     assert me_a.json()["email"] == "a@example.com"
+    assert me_a.headers.get("cache-control") == "no-store"
 
     export_a = client.get("/api/v1/settings/export", params={"format": "json"}, headers=headers_a)
     assert export_a.status_code == 200
+    assert export_a.headers.get("cache-control") == "no-store"
     body_a = export_a.json()
     assert body_a["count"] == 1
     assert body_a["trades"][0]["symbol"] == "SUA1"
@@ -314,6 +316,7 @@ def test_settings_export_and_delete_are_user_scoped(client):
         headers=headers_a,
     )
     assert delete_a.status_code == 200
+    assert delete_a.headers.get("cache-control") == "no-store"
     assert delete_a.json()["deleted_trades"] == 1
     assert delete_a.json()["anonymized_invites"] == 1
 
