@@ -1,6 +1,7 @@
 from pathlib import Path
 import argparse
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,9 @@ def main() -> int:
     warnings = []
 
     if settings.auth_enabled:
+        db_url = str(settings.database_url or "").strip().lower()
+        if db_url.startswith("sqlite"):
+            warnings.append("database_url is SQLite in auth-enabled mode (Postgres is recommended for public release)")
         if _is_empty(settings.supabase_url):
             errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
         if _is_empty(settings.supabase_jwt_secret):
@@ -47,6 +51,16 @@ def main() -> int:
     origins = [v.strip() for v in str(settings.cors_allow_origins or "").split(",") if v.strip()]
     if settings.auth_enabled and ("*" in origins or len(origins) == 0):
         warnings.append("CORS_ALLOW_ORIGINS is wildcard/empty in auth-enabled mode")
+    if settings.auth_enabled:
+        for origin in origins:
+            if origin == "*":
+                continue
+            parsed = urlparse(origin)
+            scheme = str(parsed.scheme or "").lower()
+            host = str(parsed.hostname or "").lower()
+            is_localhost = host in {"localhost", "127.0.0.1"}
+            if scheme == "http" and not is_localhost:
+                warnings.append(f"CORS origin should be https in auth-enabled mode: {origin}")
 
     if settings.rate_limit_enabled and int(settings.rate_limit_per_minute) < 30:
         warnings.append("RATE_LIMIT_PER_MINUTE is very low")
