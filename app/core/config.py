@@ -1,10 +1,23 @@
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_name: str = "Asset Management MVP"
     api_prefix: str = "/api/v1"
-    database_url: str = "sqlite:///./app.db"
+    database_url: str = Field(
+        default="sqlite:///./app.db",
+        validation_alias=AliasChoices("DATABASE_URL", "APP_DATABASE_URL"),
+    )
+
+    @model_validator(mode="after")
+    def normalize_database_url(self):
+        url = str(self.database_url or "").strip()
+        if url.startswith("postgres://"):
+            self.database_url = "postgresql+psycopg://" + url[len("postgres://") :]
+        elif url.startswith("postgresql://"):
+            self.database_url = "postgresql+psycopg://" + url[len("postgresql://") :]
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="APP_")
 
