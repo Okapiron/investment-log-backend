@@ -216,7 +216,7 @@ cd backend
 - データ削除で対象ユーザーの trade が削除される
 - データ削除時、使用済み招待コードは「消費済みのまま」ユーザー紐付けのみ匿名化される
 - データ削除APIは `confirm=true` と `confirm_text=DELETE` の両方を要求する
-- `settings` 系レスポンスは `Cache-Control: no-store` を返す
+- `settings` 系レスポンス（成功/失敗とも）は `Cache-Control: no-store` を返す
 
 ## 7. 既知の注意点
 - `AUTH_ENABLED=false` では従来モード（ローカル開発向け）

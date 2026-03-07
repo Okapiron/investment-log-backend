@@ -302,6 +302,7 @@ def test_settings_export_and_delete_are_user_scoped(client):
 
     delete_without_confirm = client.delete("/api/v1/settings/me", headers=headers_a)
     assert delete_without_confirm.status_code == 400
+    assert delete_without_confirm.headers.get("cache-control") == "no-store"
 
     delete_without_confirm_text = client.delete(
         "/api/v1/settings/me",
@@ -309,6 +310,7 @@ def test_settings_export_and_delete_are_user_scoped(client):
         headers=headers_a,
     )
     assert delete_without_confirm_text.status_code == 400
+    assert delete_without_confirm_text.headers.get("cache-control") == "no-store"
 
     delete_a = client.delete(
         "/api/v1/settings/me",
