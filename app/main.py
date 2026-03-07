@@ -127,7 +127,7 @@ if settings.rate_limit_enabled:
 @app.get("/health")
 @app.get(f"{settings.api_prefix}/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": settings.app_version}
 
 
 @app.get("/health/ready")
@@ -138,7 +138,7 @@ def health_ready():
             conn.execute(text("SELECT 1"))
     except Exception:
         raise HTTPException(status_code=503, detail="database unavailable")
-    return {"status": "ok", "db": "ok"}
+    return {"status": "ok", "db": "ok", "version": settings.app_version}
 
 app.include_router(accounts.router, prefix=settings.api_prefix)
 app.include_router(assets.router, prefix=settings.api_prefix)

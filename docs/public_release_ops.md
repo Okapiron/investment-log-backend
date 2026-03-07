@@ -7,6 +7,9 @@
 ### 1.1 Backend (Render)
 - `DATABASE_URL`:
   - Render Postgres 接続文字列
+- `APP_VERSION`:
+  - 例: `2026.03.08` / `main-<short-sha>`
+  - `Settings > Runtime` と `health` 応答に表示される識別子
 - `AUTH_ENABLED=true`
 - `SUPABASE_URL`:
   - 例: `https://<project-ref>.supabase.co`

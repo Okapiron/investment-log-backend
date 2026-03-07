@@ -97,6 +97,12 @@ def main() -> int:
     status, payload, headers = _request_json(f"{base}/health")
     ok &= _check(status == 200 and payload.get("status") == "ok", "health", f"status={status}", checks, verbose=verbose)
     ok &= _check(
+        bool(str(payload.get("version") or "").strip()),
+        "health includes app version",
+        checks=checks,
+        verbose=verbose,
+    )
+    ok &= _check(
         bool(str(headers.get("x-request-id") or "").strip()),
         "x-request-id header on /health",
         checks=checks,
@@ -128,6 +134,12 @@ def main() -> int:
         "health/ready",
         f"status={status}",
         checks,
+        verbose=verbose,
+    )
+    ok &= _check(
+        bool(str(payload.get("version") or "").strip()),
+        "health/ready includes app version",
+        checks=checks,
         verbose=verbose,
     )
 
@@ -185,6 +197,13 @@ def main() -> int:
             "settings/runtime available in auth-off mode",
             f"status={runtime_status}",
             checks,
+            verbose=verbose,
+        )
+    if runtime_status == 200:
+        ok &= _check(
+            bool(str(runtime_body.get("app_version") or "").strip()),
+            "settings/runtime includes app version",
+            checks=checks,
             verbose=verbose,
         )
 

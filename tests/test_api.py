@@ -73,6 +73,7 @@ def test_health_endpoints(client):
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
+    assert str(res.json().get("version") or "").strip() != ""
     assert str(res.headers.get("x-request-id") or "").strip() != ""
     assert res.headers.get("x-content-type-options") == "nosniff"
     assert res.headers.get("x-frame-options") == "DENY"
@@ -81,6 +82,7 @@ def test_health_endpoints(client):
     prefixed = client.get("/api/v1/health")
     assert prefixed.status_code == 200
     assert prefixed.json()["status"] == "ok"
+    assert str(prefixed.json().get("version") or "").strip() != ""
     assert str(prefixed.headers.get("x-request-id") or "").strip() != ""
     assert prefixed.headers.get("x-content-type-options") == "nosniff"
     assert prefixed.headers.get("x-frame-options") == "DENY"
@@ -91,6 +93,7 @@ def test_health_endpoints(client):
     body = ready.json()
     assert body["status"] == "ok"
     assert body["db"] == "ok"
+    assert str(body.get("version") or "").strip() != ""
     assert str(ready.headers.get("x-request-id") or "").strip() != ""
     assert ready.headers.get("x-content-type-options") == "nosniff"
     assert ready.headers.get("x-frame-options") == "DENY"
@@ -101,6 +104,7 @@ def test_health_endpoints(client):
     prefixed_body = prefixed_ready.json()
     assert prefixed_body["status"] == "ok"
     assert prefixed_body["db"] == "ok"
+    assert str(prefixed_body.get("version") or "").strip() != ""
     assert str(prefixed_ready.headers.get("x-request-id") or "").strip() != ""
     assert prefixed_ready.headers.get("x-content-type-options") == "nosniff"
     assert prefixed_ready.headers.get("x-frame-options") == "DENY"
@@ -344,6 +348,7 @@ def test_settings_runtime_available_when_auth_disabled(client):
     body = res.json()
     assert body["status"] in {"ok", "ng"}
     assert body["db"] in {"ok", "ng"}
+    assert str(body.get("app_version") or "").strip() != ""
     assert body["auth_enabled"] is False
     assert body["invite_code_required"] is False
 
@@ -364,6 +369,7 @@ def test_settings_runtime_requires_auth_when_auth_enabled(client):
     payload = with_auth.json()
     assert payload["status"] in {"ok", "ng"}
     assert payload["db"] in {"ok", "ng"}
+    assert str(payload.get("app_version") or "").strip() != ""
     assert payload["auth_enabled"] is True
     assert payload["invite_code_required"] is False
 
