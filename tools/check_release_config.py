@@ -37,6 +37,9 @@ def main() -> int:
         db_url = str(settings.database_url or "").strip().lower()
         if db_url.startswith("sqlite"):
             warnings.append("database_url is SQLite in auth-enabled mode (Postgres is recommended for public release)")
+        app_version = str(settings.app_version or "").strip().lower()
+        if app_version in {"", "dev-local"}:
+            warnings.append("APP_VERSION is not set for release (current value looks like local default)")
         if _is_empty(settings.supabase_url):
             errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
         else:
