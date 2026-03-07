@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -41,6 +42,7 @@ def main() -> int:
         help="filter by status (default: all)",
     )
     list_parser.add_argument("--limit", type=int, default=50, help="max rows (1-200, default: 50)")
+    list_parser.add_argument("--json", action="store_true", help="print list result as JSON")
 
     revoke_parser = sub.add_parser("revoke", help="revoke an invite code")
     target_group = revoke_parser.add_mutually_exclusive_group(required=True)
@@ -51,7 +53,10 @@ def main() -> int:
     with SessionLocal() as db:
         if args.command == "list":
             rows = list_invite_codes(db, status=args.status, limit=args.limit)
-            _print_rows(rows)
+            if bool(args.json):
+                print(json.dumps(rows, ensure_ascii=False, indent=2))
+            else:
+                _print_rows(rows)
             return 0
 
         if args.command == "revoke":

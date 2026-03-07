@@ -107,6 +107,12 @@ cd backend
 .venv/bin/python tools/manage_invite_codes.py list --status all --limit 50
 ```
 
+JSONで取得（運用スクリプト向け）:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py list --status active --json
+```
+
 ### 4.5 無効化
 コード文字列で無効化:
 ```bash
