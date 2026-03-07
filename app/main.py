@@ -85,11 +85,13 @@ app.include_router(settings_api.router, prefix=settings.api_prefix)
 
 
 @app.get("/health")
+@app.get(f"{settings.api_prefix}/health")
 def health():
     return {"status": "ok"}
 
 
 @app.get("/health/ready")
+@app.get(f"{settings.api_prefix}/health/ready")
 def health_ready():
     try:
         with engine.connect() as conn:
