@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import get_session
 from app.core.errors import raise_409_from_integrity
@@ -109,10 +109,23 @@ def copy_latest_snapshot(payload: CopyLatestRequest, db: Session = Depends(get_s
     if not from_month:
         raise HTTPException(status_code=400, detail="no snapshots found")
 
+    src = aliased(Snapshot)
+    latest_month_per_asset = (
+        select(func.max(Snapshot.month))
+        .where(
+            Snapshot.asset_id == Asset.id,
+            Snapshot.month <= from_month,
+        )
+        .correlate(Asset)
+        .scalar_subquery()
+    )
     source_rows = db.execute(
-        select(Asset.id, Asset.account_id, Snapshot.value_jpy, Snapshot.memo)
-        .join(Snapshot, Snapshot.asset_id == Asset.id)
-        .where(Snapshot.month == from_month, Asset.is_active == True)
+        select(Asset.id, Asset.account_id, src.value_jpy, src.memo)
+        .join(src, src.asset_id == Asset.id)
+        .where(
+            Asset.is_active == True,
+            src.month == latest_month_per_asset,
+        )
     ).all()
 
     existing_asset_ids = set(

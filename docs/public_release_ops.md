@@ -126,6 +126,12 @@ cd backend
 
 ## 6. スモークチェック
 
+一括実行:
+```bash
+cd backend
+.venv/bin/python tools/smoke_release.py --base https://<render-backend-host>
+```
+
 ### 6.1 認証
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する
 - 無効コードでは API が 403 を返す
