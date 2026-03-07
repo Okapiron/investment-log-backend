@@ -33,4 +33,4 @@ cd backend
 ```
 
 ## Ops Runbook
-- `../docs/public_release_ops.md`
+- `docs/public_release_ops.md`
