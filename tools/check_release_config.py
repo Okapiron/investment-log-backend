@@ -2,7 +2,6 @@ from pathlib import Path
 import argparse
 from datetime import datetime, timezone
 import json
-from urllib.parse import urlparse
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,11 +11,8 @@ if str(ROOT) not in sys.path:
 from sqlalchemy import inspect, text
 
 from app.core.config import settings
+from app.core.runtime_config import evaluate_runtime_config_issues
 from app.db.session import engine
-
-
-def _is_empty(value) -> bool:
-    return str(value or "").strip() == ""
 
 
 def main() -> int:
@@ -30,53 +26,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="print structured result as JSON")
     args = parser.parse_args()
 
-    errors = []
-    warnings = []
-
-    if settings.auth_enabled:
-        db_url = str(settings.database_url or "").strip().lower()
-        if db_url.startswith("sqlite"):
-            warnings.append("database_url is SQLite in auth-enabled mode (Postgres is recommended for public release)")
-        app_version = str(settings.app_version or "").strip().lower()
-        if app_version in {"", "dev-local"}:
-            warnings.append("APP_VERSION is not set for release (current value looks like local default)")
-        if _is_empty(settings.supabase_url):
-            errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
-        else:
-            supabase_url = str(settings.supabase_url or "").strip()
-            parsed_supabase = urlparse(supabase_url)
-            if parsed_supabase.scheme.lower() != "https":
-                warnings.append("SUPABASE_URL should use https")
-            host = str(parsed_supabase.hostname or "").lower()
-            if host and not host.endswith(".supabase.co"):
-                warnings.append("SUPABASE_URL host does not look like *.supabase.co")
-        if _is_empty(settings.supabase_jwt_secret):
-            errors.append("SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true")
-        if _is_empty(settings.ops_alert_target):
-            errors.append("OPS_ALERT_TARGET is required when AUTH_ENABLED=true")
-        if _is_empty(settings.db_backup_strategy):
-            errors.append("DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true")
-        if settings.invite_code_required and _is_empty(settings.supabase_service_role_key):
-            warnings.append("SUPABASE_SERVICE_ROLE_KEY is empty (auth user delete will be skipped)")
-        if not settings.rate_limit_enabled:
-            warnings.append("RATE_LIMIT_ENABLED is false in auth-enabled mode")
-
-    origins = [v.strip() for v in str(settings.cors_allow_origins or "").split(",") if v.strip()]
-    if settings.auth_enabled and ("*" in origins or len(origins) == 0):
-        warnings.append("CORS_ALLOW_ORIGINS is wildcard/empty in auth-enabled mode")
-    if settings.auth_enabled:
-        for origin in origins:
-            if origin == "*":
-                continue
-            parsed = urlparse(origin)
-            scheme = str(parsed.scheme or "").lower()
-            host = str(parsed.hostname or "").lower()
-            is_localhost = host in {"localhost", "127.0.0.1"}
-            if scheme == "http" and not is_localhost:
-                warnings.append(f"CORS origin should be https in auth-enabled mode: {origin}")
-
-    if settings.rate_limit_enabled and int(settings.rate_limit_per_minute) < 30:
-        warnings.append("RATE_LIMIT_PER_MINUTE is very low")
+    errors, warnings = evaluate_runtime_config_issues(settings)
 
     if settings.auth_enabled:
         try:
