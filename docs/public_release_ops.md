@@ -279,3 +279,12 @@ cd backend
 ## 8. ロールバック方針
 - 問題発生時は `AUTH_ENABLED=false` に戻して一時的に従来モードで運用継続
 - 原因修正後に再度 `AUTH_ENABLED=true` へ戻す
+
+## 9. CIリリースゲート
+- backend リポジトリ:
+  - `.github/workflows/ci.yml`
+  - `pytest` と `tools/preflight_release.py --json` を必須化
+- frontend リポジトリ:
+  - `.github/workflows/ci.yml`
+  - `tools/preflight_release.mjs --json` を必須化
+- Pull Request で両方のCIが成功してからマージする

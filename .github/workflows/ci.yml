@@ -1,0 +1,54 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-preflight:
+    runs-on: ubuntu-latest
+    env:
+      APP_VERSION: ci-${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" sqlalchemy "psycopg[binary]" alembic pydantic pydantic-settings pytest httpx
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Start API server
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          echo $! > .uvicorn.pid
+
+      - name: Wait for server
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Server did not become ready in time" >&2
+          exit 1
+
+      - name: Release preflight gate
+        run: python tools/preflight_release.py --base http://127.0.0.1:8000 --no-expect-auth-required --json
+
+      - name: Stop API server
+        if: always()
+        run: |
+          if [ -f .uvicorn.pid ]; then
+            kill "$(cat .uvicorn.pid)" || true
+          fi
