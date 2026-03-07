@@ -65,6 +65,9 @@ cd backend
 .venv/bin/python tools/check_release_config.py
 ```
 
+`AUTH_ENABLED=true` の場合は、上記でDBスキーマも同時に検証する
+（`trades.user_id`, `invite_codes`, `invite_codes.used_at`）。
+
 ## 4. 招待コード運用
 
 ### 4.1 新規発行

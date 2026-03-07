@@ -5,7 +5,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from sqlalchemy import inspect
+
 from app.core.config import settings
+from app.db.session import engine
 
 
 def _is_empty(value) -> bool:
@@ -34,6 +37,29 @@ def main() -> int:
 
     if settings.rate_limit_enabled and int(settings.rate_limit_per_minute) < 30:
         warnings.append("RATE_LIMIT_PER_MINUTE is very low")
+
+    if settings.auth_enabled:
+        try:
+            with engine.connect() as conn:
+                inspector = inspect(conn)
+                tables = set(inspector.get_table_names())
+
+                if "trades" not in tables:
+                    errors.append("trades table is missing")
+                else:
+                    trade_cols = {c.get("name") for c in inspector.get_columns("trades")}
+                    if "user_id" not in trade_cols:
+                        errors.append("trades.user_id is missing (run alembic upgrade head)")
+
+                if settings.invite_code_required:
+                    if "invite_codes" not in tables:
+                        errors.append("invite_codes table is missing (run alembic upgrade head)")
+                    else:
+                        invite_cols = {c.get("name") for c in inspector.get_columns("invite_codes")}
+                        if "used_at" not in invite_cols:
+                            warnings.append("invite_codes.used_at is missing (latest migration not applied)")
+        except Exception as e:
+            errors.append(f"database schema check failed: {e}")
 
     if errors:
         print("CONFIG CHECK: FAILED")
