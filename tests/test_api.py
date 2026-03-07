@@ -1,10 +1,14 @@
 import base64
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
 import time
 
 from app.core.config import settings
+from app.core.invites import hash_invite_code
+from app.db.models import InviteCode
+from app.main import app
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -41,6 +45,181 @@ def test_trades_requires_auth_when_enabled(client):
     token = _build_hs256_jwt({"sub": "user-1", "exp": int(time.time()) + 3600}, "test-secret")
     with_auth = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token}"})
     assert with_auth.status_code == 200
+
+
+def test_trades_are_scoped_by_user_when_auth_enabled(client):
+    settings.auth_enabled = True
+    settings.supabase_jwt_secret = "test-secret"
+
+    token_a = _build_hs256_jwt({"sub": "user-a", "exp": int(time.time()) + 3600}, "test-secret")
+    token_b = _build_hs256_jwt({"sub": "user-b", "exp": int(time.time()) + 3600}, "test-secret")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    created = client.post(
+        "/api/v1/trades",
+        headers=headers_a,
+        json={
+            "market": "JP",
+            "symbol": "UAAA",
+            "fills": [
+                {"side": "buy", "date": "2026-07-01", "price": 1000, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+
+    list_a = client.get("/api/v1/trades", headers=headers_a)
+    assert list_a.status_code == 200
+    assert list_a.json()["total"] == 1
+
+    list_b = client.get("/api/v1/trades", headers=headers_b)
+    assert list_b.status_code == 200
+    assert list_b.json()["total"] == 0
+
+    get_b = client.get(f"/api/v1/trades/{trade_id}", headers=headers_b)
+    assert get_b.status_code == 404
+
+    patch_b = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        headers=headers_b,
+        json={
+            "buy_date": "2026-07-01",
+            "buy_price": 1000,
+            "buy_qty": 1,
+        },
+    )
+    assert patch_b.status_code == 404
+
+    delete_b = client.delete(f"/api/v1/trades/{trade_id}", headers=headers_b)
+    assert delete_b.status_code == 404
+
+
+def _insert_invite(code: str, days: int = 7) -> None:
+    session_local = app.state.testing_session_local
+    with session_local() as db:
+        db.add(
+            InviteCode(
+                code_hash=hash_invite_code(code),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=days),
+                max_uses=1,
+                used_count=0,
+                used_by_user_id=None,
+            )
+        )
+        db.commit()
+
+
+def test_trades_require_valid_invite_code_when_invite_required(client):
+    settings.auth_enabled = True
+    settings.invite_code_required = True
+    settings.supabase_jwt_secret = "test-secret"
+
+    missing_code_token = _build_hs256_jwt(
+        {"sub": "user-no-code", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+    missing_code = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {missing_code_token}"})
+    assert missing_code.status_code == 403
+
+    bad_code_token = _build_hs256_jwt(
+        {"sub": "user-bad-code", "invite_code": "BADCODE99", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+    bad_code = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {bad_code_token}"})
+    assert bad_code.status_code == 403
+
+    _insert_invite("GOODCODE99")
+    good_code_token = _build_hs256_jwt(
+        {"sub": "user-good-code", "invite_code": "GOODCODE99", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+    good_code = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {good_code_token}"})
+    assert good_code.status_code == 200
+
+
+def test_invite_code_is_one_time_and_bound_to_first_user(client):
+    settings.auth_enabled = True
+    settings.invite_code_required = True
+    settings.supabase_jwt_secret = "test-secret"
+    _insert_invite("ONETIME999")
+
+    token_a = _build_hs256_jwt(
+        {"sub": "user-a", "invite_code": "ONETIME999", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+    token_b = _build_hs256_jwt(
+        {"sub": "user-b", "invite_code": "ONETIME999", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+
+    first = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token_a}"})
+    assert first.status_code == 200
+
+    second = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token_b}"})
+    assert second.status_code == 403
+
+    again_same_user = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token_a}"})
+    assert again_same_user.status_code == 200
+
+
+def test_settings_export_and_delete_are_user_scoped(client):
+    settings.auth_enabled = True
+    settings.invite_code_required = False
+    settings.supabase_jwt_secret = "test-secret"
+
+    token_a = _build_hs256_jwt({"sub": "user-sa", "email": "a@example.com", "exp": int(time.time()) + 3600}, "test-secret")
+    token_b = _build_hs256_jwt({"sub": "user-sb", "email": "b@example.com", "exp": int(time.time()) + 3600}, "test-secret")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    created_a = client.post(
+        "/api/v1/trades",
+        headers=headers_a,
+        json={
+            "market": "JP",
+            "symbol": "SUA1",
+            "fills": [{"side": "buy", "date": "2026-08-01", "price": 1000, "qty": 1, "fee": 0}],
+        },
+    )
+    assert created_a.status_code == 201
+    created_b = client.post(
+        "/api/v1/trades",
+        headers=headers_b,
+        json={
+            "market": "US",
+            "symbol": "SUB1",
+            "fills": [{"side": "buy", "date": "2026-08-01", "price": 100, "qty": 1, "fee": 0}],
+        },
+    )
+    assert created_b.status_code == 201
+
+    me_a = client.get("/api/v1/settings/me", headers=headers_a)
+    assert me_a.status_code == 200
+    assert me_a.json()["user_id"] == "user-sa"
+    assert me_a.json()["email"] == "a@example.com"
+
+    export_a = client.get("/api/v1/settings/export", params={"format": "json"}, headers=headers_a)
+    assert export_a.status_code == 200
+    body_a = export_a.json()
+    assert body_a["count"] == 1
+    assert body_a["trades"][0]["symbol"] == "SUA1"
+
+    delete_without_confirm = client.delete("/api/v1/settings/me", headers=headers_a)
+    assert delete_without_confirm.status_code == 400
+
+    delete_a = client.delete("/api/v1/settings/me", params={"confirm": "true"}, headers=headers_a)
+    assert delete_a.status_code == 200
+    assert delete_a.json()["deleted_trades"] == 1
+
+    list_a = client.get("/api/v1/trades", headers=headers_a)
+    assert list_a.status_code == 200
+    assert list_a.json()["total"] == 0
+
+    list_b = client.get("/api/v1/trades", headers=headers_b)
+    assert list_b.status_code == 200
+    assert list_b.json()["total"] == 1
 
 
 def test_account_asset_snapshot_crud_and_dashboard(client):

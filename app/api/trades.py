@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_session, require_auth
+from app.api.deps import get_session, require_invited_auth
+from app.core.config import settings
 from app.core.errors import raise_409_from_integrity
 from app.crud.trades import (
     compute_profit_holding,
@@ -19,7 +20,16 @@ from app.crud.trades import (
 from app.db.models import Fill, Trade
 from app.schemas.trade import FillRead, TradeCreate, TradeListRead, TradeListStatsRead, TradeRead, TradeUpdate
 
-router = APIRouter(prefix="/trades", tags=["trades"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/trades", tags=["trades"])
+
+
+def _scoped_user_id(claims: dict) -> Optional[str]:
+    if not settings.auth_enabled:
+        return None
+    sub = str((claims or {}).get("sub") or "").strip()
+    if not sub:
+        raise HTTPException(status_code=401, detail="invalid auth token: sub is missing")
+    return sub
 
 
 def _to_trade_read(trade: Trade) -> TradeRead:
@@ -241,8 +251,13 @@ def list_trades(
     from_: Optional[str] = Query(default=None, alias="from"),
     to: Optional[str] = None,
     db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
 ):
     stmt = select(Trade).options(selectinload(Trade.fills))
+    scoped_user_id = _scoped_user_id(claims)
+    if scoped_user_id is not None:
+        stmt = stmt.where(Trade.user_id == scoped_user_id)
+
     # minimal DB prefilter for obvious dimensions
     market_values = [v for v in _parse_csv(market) if v in {"JP", "US"}]
     if market_values:
@@ -453,31 +468,47 @@ def list_trades(
 
 
 @router.post("", response_model=TradeRead, status_code=201)
-def create_trade(payload: TradeCreate, db: Session = Depends(get_session)):
-    trade = create_trade_with_fills(db, payload)
+def create_trade(
+    payload: TradeCreate,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    scoped_user_id = _scoped_user_id(claims)
+    trade = create_trade_with_fills(db, payload, user_id=scoped_user_id)
     try:
         db.commit()
     except IntegrityError as e:
         db.rollback()
         raise_409_from_integrity(e)
 
-    reloaded = fetch_trade(db, trade.id)
+    reloaded = fetch_trade(db, trade.id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
     return _to_trade_read(reloaded)
 
 
 @router.get("/{trade_id}", response_model=TradeRead)
-def get_trade(trade_id: int, db: Session = Depends(get_session)):
-    trade = fetch_trade(db, trade_id)
+def get_trade(
+    trade_id: int,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    scoped_user_id = _scoped_user_id(claims)
+    trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
     return _to_trade_read(trade)
 
 
 @router.patch("/{trade_id}", response_model=TradeRead)
-def update_trade(trade_id: int, payload: TradeUpdate, db: Session = Depends(get_session)):
-    trade = fetch_trade(db, trade_id)
+def update_trade(
+    trade_id: int,
+    payload: TradeUpdate,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    scoped_user_id = _scoped_user_id(claims)
+    trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
 
@@ -503,15 +534,20 @@ def update_trade(trade_id: int, payload: TradeUpdate, db: Session = Depends(get_
         db.rollback()
         raise_409_from_integrity(e)
 
-    reloaded = fetch_trade(db, trade_id)
+    reloaded = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
     return _to_trade_read(reloaded)
 
 
 @router.delete("/{trade_id}", status_code=204)
-def delete_trade(trade_id: int, db: Session = Depends(get_session)):
-    trade = db.get(Trade, trade_id)
+def delete_trade(
+    trade_id: int,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    scoped_user_id = _scoped_user_id(claims)
+    trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
 

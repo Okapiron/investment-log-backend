@@ -17,6 +17,30 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("SUPABASE_JWT_SECRET", "APP_SUPABASE_JWT_SECRET"),
     )
+    supabase_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_URL", "APP_SUPABASE_URL"),
+    )
+    supabase_service_role_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_SERVICE_ROLE_KEY", "APP_SUPABASE_SERVICE_ROLE_KEY"),
+    )
+    invite_code_required: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("INVITE_CODE_REQUIRED", "APP_INVITE_CODE_REQUIRED"),
+    )
+    cors_allow_origins: str = Field(
+        default="*",
+        validation_alias=AliasChoices("CORS_ALLOW_ORIGINS", "APP_CORS_ALLOW_ORIGINS"),
+    )
+    rate_limit_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("RATE_LIMIT_ENABLED", "APP_RATE_LIMIT_ENABLED"),
+    )
+    rate_limit_per_minute: int = Field(
+        default=120,
+        validation_alias=AliasChoices("RATE_LIMIT_PER_MINUTE", "APP_RATE_LIMIT_PER_MINUTE"),
+    )
 
     @model_validator(mode="after")
     def normalize_database_url(self):

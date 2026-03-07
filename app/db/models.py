@@ -74,6 +74,7 @@ class Trade(Base):
     __table_args__ = (
         CheckConstraint("market IN ('JP','US')", name="ck_trades_market"),
         CheckConstraint("(rating IS NULL) OR (rating BETWEEN 1 AND 5)", name="ck_trades_rating"),
+        Index("idx_trades_user_id", "user_id"),
         Index("idx_trades_market", "market"),
         Index("idx_trades_symbol", "symbol"),
         Index("idx_trades_opened_at", "opened_at"),
@@ -81,6 +82,7 @@ class Trade(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String)
     market: Mapped[str] = mapped_column(String, nullable=False)
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
@@ -130,3 +132,22 @@ class Fill(Base):
     fee: Mapped[Optional[int]] = mapped_column(Integer)
 
     trade: Mapped[Trade] = relationship(back_populates="fills")
+
+
+class InviteCode(TimestampMixin, Base):
+    __tablename__ = "invite_codes"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="uq_invite_codes_code_hash"),
+        CheckConstraint("max_uses >= 1", name="ck_invite_codes_max_uses"),
+        CheckConstraint("used_count >= 0", name="ck_invite_codes_used_count_nonnegative"),
+        Index("idx_invite_codes_code_hash", "code_hash"),
+        Index("idx_invite_codes_expires_at", "expires_at"),
+        Index("idx_invite_codes_used_by_user_id", "used_by_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    code_hash: Mapped[str] = mapped_column(String, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    used_by_user_id: Mapped[Optional[str]] = mapped_column(String)

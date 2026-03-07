@@ -93,11 +93,12 @@ def review_completion_missing_items(trade: Trade) -> list[str]:
     return missing
 
 
-def create_trade_with_fills(db: Session, payload: TradeCreate) -> Trade:
+def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional[str] = None) -> Trade:
     _validate_market(payload.market)
     buy_input, sell_input = _extract_buy_sell_optional(payload.fills)
 
     trade = Trade(
+        user_id=(str(user_id).strip() or None) if user_id is not None else None,
         market=payload.market,
         symbol=payload.symbol,
         name=payload.name,
@@ -254,5 +255,8 @@ def apply_trade_filters(
     return stmt
 
 
-def fetch_trade(db: Session, trade_id: int) -> Optional[Trade]:
-    return db.scalar(select(Trade).options(selectinload(Trade.fills)).where(Trade.id == trade_id))
+def fetch_trade(db: Session, trade_id: int, user_id: Optional[str] = None) -> Optional[Trade]:
+    stmt = select(Trade).options(selectinload(Trade.fills)).where(Trade.id == trade_id)
+    if user_id is not None:
+        stmt = stmt.where(Trade.user_id == user_id)
+    return db.scalar(stmt)
