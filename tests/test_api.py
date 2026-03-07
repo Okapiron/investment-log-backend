@@ -273,6 +273,20 @@ def test_settings_export_and_delete_are_user_scoped(client):
     )
     assert created_b.status_code == 201
 
+    session_local = app.state.testing_session_local
+    with session_local() as db:
+        db.add(
+            InviteCode(
+                code_hash=hash_invite_code("DELETEU001"),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=5),
+                max_uses=1,
+                used_count=1,
+                used_by_user_id="user-sa",
+                used_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
     me_a = client.get("/api/v1/settings/me", headers=headers_a)
     assert me_a.status_code == 200
     assert me_a.json()["user_id"] == "user-sa"
@@ -290,6 +304,13 @@ def test_settings_export_and_delete_are_user_scoped(client):
     delete_a = client.delete("/api/v1/settings/me", params={"confirm": "true"}, headers=headers_a)
     assert delete_a.status_code == 200
     assert delete_a.json()["deleted_trades"] == 1
+    assert delete_a.json()["anonymized_invites"] == 1
+
+    with session_local() as db:
+        invite = db.scalar(select(InviteCode).where(InviteCode.code_hash == hash_invite_code("DELETEU001")))
+        assert invite is not None
+        assert invite.used_count == 1
+        assert invite.used_by_user_id is None
 
     list_a = client.get("/api/v1/trades", headers=headers_a)
     assert list_a.status_code == 200

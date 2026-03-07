@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_session, require_invited_auth
@@ -191,17 +191,25 @@ def delete_my_account_data(
         db.query(Fill).filter(Fill.trade_id.in_(to_delete)).delete(synchronize_session=False)
         db.query(Trade).filter(Trade.id.in_(to_delete)).delete(synchronize_session=False)
 
-    db.execute(
-        delete(InviteCode).where(
-            InviteCode.used_by_user_id == scoped_user_id,
-            InviteCode.used_count > 0,
-        )
+    invite_rows = list(
+        db.scalars(
+            select(InviteCode).where(
+                InviteCode.used_by_user_id == scoped_user_id,
+                InviteCode.used_count > 0,
+            )
+        ).all()
     )
+    for row in invite_rows:
+        # Keep one-time code consumption history, but detach deleted user reference.
+        row.used_by_user_id = None
+        db.add(row)
+    anonymized_invites = len(invite_rows)
     db.commit()
 
     deleted_auth_user, auth_delete_error = _try_delete_supabase_auth_user(scoped_user_id)
     return {
         "deleted_trades": deleted_count,
+        "anonymized_invites": anonymized_invites,
         "deleted_auth_user": deleted_auth_user,
         "auth_delete_error": auth_delete_error,
     }
