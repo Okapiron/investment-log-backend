@@ -288,3 +288,17 @@ cd backend
   - `.github/workflows/ci.yml`
   - `tools/preflight_release.mjs --json` を必須化
 - Pull Request で両方のCIが成功してからマージする
+
+### 9.1 Required checks の設定手順（GitHub UI）
+各リポジトリで以下を実施:
+1. `Settings` -> `Branches` -> `Add branch protection rule`
+2. `Branch name pattern` に `main` を入力
+3. `Require a pull request before merging` をON
+4. `Require status checks to pass before merging` をON
+5. Status checks に以下を追加
+   - backend: `Backend CI / test-and-preflight`
+   - frontend: `Frontend CI / preflight`
+6. `Save changes` で保存
+
+補足:
+- チェック名が表示されない場合は、対象ブランチで一度CIを実行してから再読み込みする。
