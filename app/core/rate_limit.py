@@ -24,7 +24,11 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path or ""
+        method = (request.method or "").upper()
         if not path.startswith(self.api_prefix):
+            return await call_next(request)
+        if method == "OPTIONS":
+            # CORS preflight should not consume user rate-limit budget.
             return await call_next(request)
         if path in {
             "/health",
@@ -34,7 +38,11 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
         }:
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").strip()
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip() or "unknown"
+        else:
+            client_ip = request.client.host if request.client else "unknown"
         key = (client_ip, self._minute)
 
         with self._lock:

@@ -70,6 +70,14 @@ cd backend
 `AUTH_ENABLED=true` の場合は、上記でDBスキーマも同時に検証する
 （`trades.user_id`, `invite_codes`, `invite_codes.used_at`）。
 
+本番反映直前は strict モード推奨:
+```bash
+cd backend
+.venv/bin/python tools/check_release_config.py --strict
+```
+
+`AUTH_ENABLED=true` で `RATE_LIMIT_ENABLED=false` の場合は warning が出る。
+
 ## 4. 招待コード運用
 
 ### 4.1 新規発行

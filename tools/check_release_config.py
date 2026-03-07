@@ -1,4 +1,5 @@
 from pathlib import Path
+import argparse
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,15 @@ def _is_empty(value) -> bool:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate release runtime config and schema.")
+    parser.add_argument(
+        "--strict",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="treat warnings as failure (default: false)",
+    )
+    args = parser.parse_args()
+
     errors = []
     warnings = []
 
@@ -30,6 +40,8 @@ def main() -> int:
             errors.append("DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true")
         if settings.invite_code_required and _is_empty(settings.supabase_service_role_key):
             warnings.append("SUPABASE_SERVICE_ROLE_KEY is empty (auth user delete will be skipped)")
+        if not settings.rate_limit_enabled:
+            warnings.append("RATE_LIMIT_ENABLED is false in auth-enabled mode")
 
     origins = [v.strip() for v in str(settings.cors_allow_origins or "").split(",") if v.strip()]
     if settings.auth_enabled and ("*" in origins or len(origins) == 0):
@@ -65,6 +77,12 @@ def main() -> int:
         print("CONFIG CHECK: FAILED")
         for e in errors:
             print(f"- ERROR: {e}")
+        for w in warnings:
+            print(f"- WARN: {w}")
+        return 1
+
+    if args.strict and warnings:
+        print("CONFIG CHECK: FAILED (strict mode)")
         for w in warnings:
             print(f"- WARN: {w}")
         return 1
