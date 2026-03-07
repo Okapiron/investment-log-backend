@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,9 +12,7 @@ from app.core.rate_limit import SimpleRateLimitMiddleware
 from app.db.base import Base
 from app.db.session import engine
 
-app = FastAPI(title=settings.app_name)
 logger = logging.getLogger("tradetrace.app")
-app.add_middleware(RequestIdMiddleware)
 
 
 def _parse_cors_origins(raw: str) -> list[str]:
@@ -59,50 +58,6 @@ def _validate_runtime_config() -> None:
         raise RuntimeError("Invalid runtime config: " + "; ".join(errors))
 
 
-cors_origins = _parse_cors_origins(settings.cors_allow_origins)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=False if cors_origins == ["*"] else True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-if settings.rate_limit_enabled:
-    app.add_middleware(
-        SimpleRateLimitMiddleware,
-        max_per_minute=settings.rate_limit_per_minute,
-        api_prefix=settings.api_prefix,
-    )
-
-app.include_router(accounts.router, prefix=settings.api_prefix)
-app.include_router(assets.router, prefix=settings.api_prefix)
-app.include_router(snapshots.router, prefix=settings.api_prefix)
-app.include_router(dashboard.router, prefix=settings.api_prefix)
-app.include_router(monthly.router, prefix=settings.api_prefix)
-app.include_router(trades.router, prefix=settings.api_prefix)
-app.include_router(prices.router, prefix=settings.api_prefix)
-app.include_router(settings_api.router, prefix=settings.api_prefix)
-
-
-@app.get("/health")
-@app.get(f"{settings.api_prefix}/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/health/ready")
-@app.get(f"{settings.api_prefix}/health/ready")
-def health_ready():
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    return {"status": "ok", "db": "ok"}
-
-
 def _ensure_trade_user_id_column() -> None:
     # Backward-compatible schema patch for existing beta DBs.
     with engine.begin() as conn:
@@ -135,9 +90,61 @@ def _ensure_invite_code_columns() -> None:
             conn.execute(text("CREATE INDEX idx_invite_codes_used_at ON invite_codes (used_at)"))
 
 
-@app.on_event("startup")
-def startup():
+def _run_startup_tasks() -> None:
     _validate_runtime_config()
     Base.metadata.create_all(bind=engine)
     _ensure_trade_user_id_column()
     _ensure_invite_code_columns()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _run_startup_tasks()
+    yield
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+app.add_middleware(RequestIdMiddleware)
+
+cors_origins = _parse_cors_origins(settings.cors_allow_origins)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=False if cors_origins == ["*"] else True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+if settings.rate_limit_enabled:
+    app.add_middleware(
+        SimpleRateLimitMiddleware,
+        max_per_minute=settings.rate_limit_per_minute,
+        api_prefix=settings.api_prefix,
+    )
+
+
+@app.get("/health")
+@app.get(f"{settings.api_prefix}/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+@app.get(f"{settings.api_prefix}/health/ready")
+def health_ready():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return {"status": "ok", "db": "ok"}
+
+app.include_router(accounts.router, prefix=settings.api_prefix)
+app.include_router(assets.router, prefix=settings.api_prefix)
+app.include_router(snapshots.router, prefix=settings.api_prefix)
+app.include_router(dashboard.router, prefix=settings.api_prefix)
+app.include_router(monthly.router, prefix=settings.api_prefix)
+app.include_router(trades.router, prefix=settings.api_prefix)
+app.include_router(prices.router, prefix=settings.api_prefix)
+app.include_router(settings_api.router, prefix=settings.api_prefix)
