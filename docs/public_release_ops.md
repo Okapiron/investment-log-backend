@@ -148,6 +148,9 @@ cd backend
 .venv/bin/python tools/smoke_release.py --base https://<render-backend-host>
 ```
 
+このスクリプトは `health`, `health/ready`, `openapi`, `authガード` に加えて
+`X-Request-ID` とセキュリティヘッダーも検証する。
+
 ### 6.1 認証
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する
 - 無効コードでは API が 403 を返す

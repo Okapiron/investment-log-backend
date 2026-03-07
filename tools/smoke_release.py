@@ -21,22 +21,24 @@ def _normalize_prefix(prefix: str) -> str:
     return raw if raw.startswith("/") else f"/{raw}"
 
 
-def _request_json(url: str) -> tuple[int, dict]:
+def _request_json(url: str) -> tuple[int, dict, dict]:
     try:
         with urllib.request.urlopen(url, timeout=10) as res:
             status = int(res.status)
+            headers = {k.lower(): v for k, v in dict(res.headers).items()}
             body = res.read().decode("utf-8")
             data = json.loads(body) if body else {}
-            return status, data if isinstance(data, dict) else {}
+            return status, data if isinstance(data, dict) else {}, headers
     except urllib.error.HTTPError as e:
         payload = {}
+        headers = {k.lower(): v for k, v in dict(e.headers).items()} if e.headers else {}
         try:
             payload = json.loads(e.read().decode("utf-8"))
             if not isinstance(payload, dict):
                 payload = {}
         except Exception:
             payload = {}
-        return int(e.code), payload
+        return int(e.code), payload, headers
 
 
 def _check(condition: bool, label: str, detail: str = "") -> bool:
@@ -63,21 +65,25 @@ def main() -> int:
 
     ok = True
 
-    status, payload = _request_json(f"{base}/health")
+    status, payload, headers = _request_json(f"{base}/health")
     ok &= _check(status == 200 and payload.get("status") == "ok", "health", f"status={status}")
+    ok &= _check(bool(str(headers.get("x-request-id") or "").strip()), "x-request-id header on /health")
+    ok &= _check(headers.get("x-content-type-options") == "nosniff", "x-content-type-options header")
+    ok &= _check(headers.get("x-frame-options") == "DENY", "x-frame-options header")
+    ok &= _check(headers.get("referrer-policy") == "no-referrer", "referrer-policy header")
 
-    status, payload = _request_json(f"{base}{prefix}/health/ready")
+    status, payload, _ = _request_json(f"{base}{prefix}/health/ready")
     db_ok = payload.get("db") == "ok"
     ok &= _check(status == 200 and payload.get("status") == "ok" and db_ok, "health/ready", f"status={status}")
 
-    status, payload = _request_json(f"{base}/openapi.json")
+    status, payload, _ = _request_json(f"{base}/openapi.json")
     has_trades = False
     if status == 200:
         paths = payload.get("paths")
         has_trades = isinstance(paths, dict) and f"{prefix}/trades" in paths
     ok &= _check(status == 200 and has_trades, "openapi includes trades path", f"status={status}")
 
-    status, _ = _request_json(f"{base}{prefix}/trades")
+    status, _, _ = _request_json(f"{base}{prefix}/trades")
     if args.expect_auth_required:
         auth_ok = status in {401, 403}
         ok &= _check(auth_ok, "trades requires auth", f"status={status}")
