@@ -66,6 +66,33 @@ def compute_profit_holding(buy: Fill, sell: Fill) -> Tuple[int, int]:
     return profit, holding_days
 
 
+def _has_non_empty_text(value: Optional[str]) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _has_any_tag(csv_text: Optional[str]) -> bool:
+    return len([x.strip() for x in str(csv_text or "").split(",") if x.strip()]) > 0
+
+
+def review_completion_missing_items(trade: Trade) -> list[str]:
+    missing = []
+    is_closed = bool(str(trade.closed_at or "").strip())
+
+    if not is_closed:
+        missing.append("売却データ")
+    if not _has_any_tag(trade.tags):
+        missing.append("タグ")
+    if trade.rating is None or int(trade.rating) <= 0:
+        missing.append("評価")
+    if not _has_non_empty_text(trade.notes_buy):
+        missing.append("購入理由")
+    if not _has_non_empty_text(trade.notes_sell):
+        missing.append("売却理由")
+    if not _has_non_empty_text(trade.notes_review):
+        missing.append("考察")
+    return missing
+
+
 def create_trade_with_fills(db: Session, payload: TradeCreate) -> Trade:
     _validate_market(payload.market)
     buy_input, sell_input = _extract_buy_sell_optional(payload.fills)
@@ -178,6 +205,11 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
 
         trade.opened_at = buy_input.date
         trade.closed_at = sell_input.date if sell_input is not None else ""
+
+    # If review requirements are no longer satisfied, keep trade as pending review.
+    if review_completion_missing_items(trade):
+        trade.review_done = False
+        trade.reviewed_at = None
 
     trade.updated_at = _utc_now_iso()
     return trade

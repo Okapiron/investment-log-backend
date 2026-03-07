@@ -323,6 +323,11 @@ def test_trades_status_filter_and_update(client):
         json={
             "market": "JP",
             "symbol": "R1",
+            "tags": "swing",
+            "rating": 3,
+            "notes_buy": "buy note",
+            "notes_sell": "sell note",
+            "notes_review": "review note",
             "fills": [
                 {"side": "buy", "date": "2026-03-01", "price": 100, "qty": 1, "fee": 0},
                 {"side": "sell", "date": "2026-03-02", "price": 110, "qty": 1, "fee": 0},
@@ -364,6 +369,66 @@ def test_trades_status_filter_and_update(client):
     assert done_body["total"] == 1
     assert done_body["items"][0]["review_done"] is True
     assert done_body["stats"]["pending_review_count"] == 0
+
+
+def test_review_done_requires_completion_requirements(client):
+    created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "REQ1",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 100, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-03-02", "price": 110, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+
+    review_done = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={"review_done": True, "reviewed_at": "2026-03-05"},
+    )
+    assert review_done.status_code == 422
+    assert "レビュー完了に必要な項目が不足しています" in str(review_done.json().get("detail"))
+
+
+def test_regular_update_auto_resets_review_done_when_requirements_lost(client):
+    created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "REQ2",
+            "tags": "swing",
+            "rating": 4,
+            "notes_buy": "buy note",
+            "notes_sell": "sell note",
+            "notes_review": "review note",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 100, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-03-02", "price": 110, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+
+    review_done = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={"review_done": True, "reviewed_at": "2026-03-05"},
+    )
+    assert review_done.status_code == 200
+    assert review_done.json()["review_done"] is True
+
+    updated = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={"tags": ""},
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["review_done"] is False
+    assert body["reviewed_at"] is None
 
 
 def test_trade_detail_update_can_close_open_trade_and_keep_review_pending(client):

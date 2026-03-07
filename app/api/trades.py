@@ -13,6 +13,7 @@ from app.crud.trades import (
     compute_profit_holding,
     create_trade_with_fills,
     fetch_trade,
+    review_completion_missing_items,
     update_trade_with_fills,
 )
 from app.db.models import Fill, Trade
@@ -486,6 +487,13 @@ def update_trade(trade_id: int, payload: TradeUpdate, db: Session = Depends(get_
     has_regular_update = any(k not in review_keys for k in patch_data.keys())
     if has_review_update and has_regular_update:
         raise HTTPException(status_code=422, detail="review fields must be updated separately")
+    if has_review_update and patch_data.get("review_done") is True:
+        missing = review_completion_missing_items(trade)
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=f"レビュー完了に必要な項目が不足しています: {'、'.join(missing)}",
+            )
 
     update_trade_with_fills(db, trade, payload)
 
