@@ -1,5 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import argparse
+import json
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from sqlalchemy import select
 
@@ -13,6 +20,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=7, help="expiration in days (default: 7)")
     parser.add_argument("--length", type=int, default=10, help="code length (8-12, default: 10)")
     parser.add_argument("--code", type=str, default="", help="optional fixed code")
+    parser.add_argument("--json", action="store_true", help="print output as JSON")
     args = parser.parse_args()
 
     if args.days <= 0:
@@ -40,8 +48,12 @@ def main() -> int:
         db.add(row)
         db.commit()
 
-    print(f"invite_code={code}")
-    print(f"expires_at={expires_at.isoformat()}")
+    payload = {"invite_code": code, "expires_at": expires_at.isoformat()}
+    if bool(args.json):
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"invite_code={code}")
+        print(f"expires_at={expires_at.isoformat()}")
     return 0
 
 

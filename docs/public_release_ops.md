@@ -113,6 +113,12 @@ cd backend
 - `invite_code=AB12CD34EF`
 - `expires_at=2026-03-14T...`
 
+JSONで取得:
+```bash
+cd backend
+.venv/bin/python tools/create_invite_code.py --days 7 --length 10 --json
+```
+
 ### 4.2 固定コードで発行 (必要時のみ)
 ```bash
 cd backend
