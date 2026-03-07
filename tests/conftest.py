@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
+from app.core.config import settings
 from app.db.session import get_db
 from app.main import app
 
@@ -41,3 +42,16 @@ def client() -> Generator[TestClient, None, None]:
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def disable_auth_by_default() -> Generator[None, None, None]:
+    prev_enabled = settings.auth_enabled
+    prev_secret = settings.supabase_jwt_secret
+    settings.auth_enabled = False
+    settings.supabase_jwt_secret = ""
+    try:
+        yield
+    finally:
+        settings.auth_enabled = prev_enabled
+        settings.supabase_jwt_secret = prev_secret

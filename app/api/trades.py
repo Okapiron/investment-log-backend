@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_session
+from app.api.deps import get_session, require_auth
 from app.core.errors import raise_409_from_integrity
 from app.crud.trades import (
     compute_profit_holding,
@@ -19,7 +19,7 @@ from app.crud.trades import (
 from app.db.models import Fill, Trade
 from app.schemas.trade import FillRead, TradeCreate, TradeListRead, TradeListStatsRead, TradeRead, TradeUpdate
 
-router = APIRouter(prefix="/trades", tags=["trades"])
+router = APIRouter(prefix="/trades", tags=["trades"], dependencies=[Depends(require_auth)])
 
 
 def _to_trade_read(trade: Trade) -> TradeRead:

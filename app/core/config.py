@@ -9,6 +9,14 @@ class Settings(BaseSettings):
         default="sqlite:///./app.db",
         validation_alias=AliasChoices("DATABASE_URL", "APP_DATABASE_URL"),
     )
+    auth_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AUTH_ENABLED", "APP_AUTH_ENABLED"),
+    )
+    supabase_jwt_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("SUPABASE_JWT_SECRET", "APP_SUPABASE_JWT_SECRET"),
+    )
 
     @model_validator(mode="after")
     def normalize_database_url(self):

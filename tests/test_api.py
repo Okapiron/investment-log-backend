@@ -1,3 +1,26 @@
+import base64
+import hashlib
+import hmac
+import json
+import time
+
+from app.core.config import settings
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
+
+
+def _build_hs256_jwt(payload: dict, secret: str) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h_b64 = _b64url_encode(json.dumps(header, separators=(",", ":")).encode("utf-8"))
+    p_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signing_input = f"{h_b64}.{p_b64}".encode("utf-8")
+    sig = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    s_b64 = _b64url_encode(sig)
+    return f"{h_b64}.{p_b64}.{s_b64}"
+
+
 def test_openapi(client):
     res = client.get("/openapi.json")
     assert res.status_code == 200
@@ -6,6 +29,18 @@ def test_openapi(client):
     assert "/api/v1/monthly" in data["paths"]
     assert "/api/v1/snapshots/copy-latest" in data["paths"]
     assert "/api/v1/trades" in data["paths"]
+
+
+def test_trades_requires_auth_when_enabled(client):
+    settings.auth_enabled = True
+    settings.supabase_jwt_secret = "test-secret"
+
+    no_auth = client.get("/api/v1/trades")
+    assert no_auth.status_code == 401
+
+    token = _build_hs256_jwt({"sub": "user-1", "exp": int(time.time()) + 3600}, "test-secret")
+    with_auth = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token}"})
+    assert with_auth.status_code == 200
 
 
 def test_account_asset_snapshot_crud_and_dashboard(client):
@@ -592,6 +627,11 @@ def test_trades_status_sort(client):
         json={
             "market": "JP",
             "symbol": "CMP",
+            "tags": "swing",
+            "rating": 4,
+            "notes_buy": "buy note",
+            "notes_sell": "sell note",
+            "notes_review": "review note",
             "fills": [
                 {"side": "buy", "date": "2026-06-01", "price": 1000, "qty": 1, "fee": 0},
                 {"side": "sell", "date": "2026-06-02", "price": 1100, "qty": 1, "fee": 0},
