@@ -70,12 +70,23 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
             self._rollover_if_needed()
             key = (principal_key, self._minute)
             self._counts[key] += 1
+            used = int(self._counts[key])
+            remaining = max(0, self.max_per_minute - used)
+            retry_after = max(1, 60 - int(time.time() % 60))
             if self._counts[key] > self.max_per_minute:
-                retry_after = max(1, 60 - int(time.time() % 60))
                 return JSONResponse(
                     {"detail": "rate limit exceeded"},
                     status_code=429,
-                    headers={"Retry-After": str(retry_after)},
+                    headers={
+                        "Retry-After": str(retry_after),
+                        "X-RateLimit-Limit": str(self.max_per_minute),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(retry_after),
+                    },
                 )
 
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(self.max_per_minute)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(retry_after)
+        return response

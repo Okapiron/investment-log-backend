@@ -20,6 +20,7 @@
 - `RATE_LIMIT_ENABLED=true`
 - `RATE_LIMIT_PER_MINUTE=120`
   - auth有効時はユーザー単位を優先し、未認証時はIP単位で制限
+  - `X-RateLimit-Limit` / `X-RateLimit-Remaining` / `X-RateLimit-Reset` を返す
   - 超過時は `429` と残り秒数の `Retry-After` ヘッダを返す
 - `OPS_ALERT_TARGET`:
   - 例: `slack:#tradetrace-alerts` / `email:ops@example.com`
@@ -189,6 +190,7 @@ cd backend
 
 このスクリプトは `health`, `health/ready`, `openapi`, `authガード` に加えて
 `X-Request-ID` とセキュリティヘッダーも検証する。
+`RATE_LIMIT_ENABLED=true` 環境では `--expect-rate-limit-headers` を付ける。
 
 ### 6.1 認証
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する

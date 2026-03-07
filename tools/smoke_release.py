@@ -58,6 +58,12 @@ def main() -> int:
         default=True,
         help="expect /trades without auth to be rejected (default: true)",
     )
+    parser.add_argument(
+        "--expect-rate-limit-headers",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="expect X-RateLimit-* headers on /trades response (default: false)",
+    )
     args = parser.parse_args()
 
     base = _normalize_base(args.base)
@@ -83,7 +89,16 @@ def main() -> int:
         has_trades = isinstance(paths, dict) and f"{prefix}/trades" in paths
     ok &= _check(status == 200 and has_trades, "openapi includes trades path", f"status={status}")
 
-    status, _, _ = _request_json(f"{base}{prefix}/trades")
+    status, _, trades_headers = _request_json(f"{base}{prefix}/trades")
+    has_rate_headers = (
+        bool(str(trades_headers.get("x-ratelimit-limit") or "").strip())
+        and bool(str(trades_headers.get("x-ratelimit-remaining") or "").strip())
+        and bool(str(trades_headers.get("x-ratelimit-reset") or "").strip())
+    )
+    if args.expect_rate_limit_headers:
+        ok &= _check(has_rate_headers, "rate-limit headers present on trades response")
+    else:
+        _check(True, "rate-limit header check skipped (not expected)")
     if args.expect_auth_required:
         auth_ok = status in {401, 403}
         ok &= _check(auth_ok, "trades requires auth", f"status={status}")

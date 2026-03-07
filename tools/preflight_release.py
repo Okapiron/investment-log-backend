@@ -10,6 +10,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _is_truthy(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on"}
+
+
 def _run(cmd: list[str]) -> int:
     print(f"$ {' '.join(cmd)}", flush=True)
     completed = subprocess.run(cmd, cwd=str(ROOT))
@@ -35,6 +40,8 @@ def main() -> int:
         return rc
 
     smoke_cmd = [python_cmd, "tools/smoke_release.py", "--base", str(args.base)]
+    if _is_truthy(os.getenv("RATE_LIMIT_ENABLED")) or _is_truthy(os.getenv("APP_RATE_LIMIT_ENABLED")):
+        smoke_cmd.append("--expect-rate-limit-headers")
     if not args.expect_auth_required:
         smoke_cmd.append("--no-expect-auth-required")
     rc = _run(smoke_cmd)

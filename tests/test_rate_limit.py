@@ -53,11 +53,17 @@ def test_options_preflight_does_not_consume_rate_limit():
 
     first = client.get("/api/v1/ping")
     assert first.status_code == 200
+    assert first.headers.get("x-ratelimit-limit") == "1"
+    assert first.headers.get("x-ratelimit-remaining") == "0"
+    assert 1 <= int(first.headers.get("x-ratelimit-reset") or "0") <= 60
 
     second = client.get("/api/v1/ping")
     assert second.status_code == 429
     retry_after = int(second.headers.get("retry-after") or "0")
     assert 1 <= retry_after <= 60
+    assert second.headers.get("x-ratelimit-limit") == "1"
+    assert second.headers.get("x-ratelimit-remaining") == "0"
+    assert 1 <= int(second.headers.get("x-ratelimit-reset") or "0") <= 60
 
 
 def test_health_endpoint_is_excluded_from_rate_limit():
@@ -105,3 +111,22 @@ def test_rate_limit_uses_user_bucket_when_auth_enabled():
     finally:
         settings.auth_enabled = prev_auth_enabled
         settings.supabase_jwt_secret = prev_secret
+
+
+def test_rate_limit_remaining_decreases_per_request():
+    client = _build_test_app(max_per_minute=2)
+
+    first = client.get("/api/v1/ping")
+    assert first.status_code == 200
+    assert first.headers.get("x-ratelimit-limit") == "2"
+    assert first.headers.get("x-ratelimit-remaining") == "1"
+
+    second = client.get("/api/v1/ping")
+    assert second.status_code == 200
+    assert second.headers.get("x-ratelimit-limit") == "2"
+    assert second.headers.get("x-ratelimit-remaining") == "0"
+
+    third = client.get("/api/v1/ping")
+    assert third.status_code == 429
+    assert third.headers.get("x-ratelimit-limit") == "2"
+    assert third.headers.get("x-ratelimit-remaining") == "0"
