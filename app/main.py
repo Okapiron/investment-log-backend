@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
@@ -9,6 +11,7 @@ from app.db.base import Base
 from app.db.session import engine
 
 app = FastAPI(title=settings.app_name)
+logger = logging.getLogger("tradetrace.app")
 
 
 def _parse_cors_origins(raw: str) -> list[str]:
@@ -19,6 +22,39 @@ def _parse_cors_origins(raw: str) -> list[str]:
         return ["*"]
     values = [v.strip() for v in text_value.split(",") if v.strip()]
     return values or ["*"]
+
+
+def _is_blank(value: str) -> bool:
+    return str(value or "").strip() == ""
+
+
+def get_runtime_config_issues() -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if settings.auth_enabled:
+        if _is_blank(settings.supabase_url):
+            errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
+        if _is_blank(settings.supabase_jwt_secret):
+            errors.append("SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true")
+        if _is_blank(settings.ops_alert_target):
+            errors.append("OPS_ALERT_TARGET is required when AUTH_ENABLED=true")
+        if _is_blank(settings.db_backup_strategy):
+            errors.append("DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true")
+
+        parsed_origins = _parse_cors_origins(settings.cors_allow_origins)
+        if parsed_origins == ["*"]:
+            warnings.append("CORS_ALLOW_ORIGINS is wildcard in auth-enabled mode")
+
+    return errors, warnings
+
+
+def _validate_runtime_config() -> None:
+    errors, warnings = get_runtime_config_issues()
+    for item in warnings:
+        logger.warning("CONFIG WARNING: %s", item)
+    if errors:
+        raise RuntimeError("Invalid runtime config: " + "; ".join(errors))
 
 
 cors_origins = _parse_cors_origins(settings.cors_allow_origins)
@@ -81,5 +117,6 @@ def _ensure_trade_user_id_column() -> None:
 
 @app.on_event("startup")
 def startup():
+    _validate_runtime_config()
     Base.metadata.create_all(bind=engine)
     _ensure_trade_user_id_column()

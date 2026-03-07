@@ -8,7 +8,7 @@ import time
 from app.core.config import settings
 from app.core.invites import hash_invite_code
 from app.db.models import InviteCode
-from app.main import app
+from app.main import app, get_runtime_config_issues
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -33,6 +33,37 @@ def test_openapi(client):
     assert "/api/v1/monthly" in data["paths"]
     assert "/api/v1/snapshots/copy-latest" in data["paths"]
     assert "/api/v1/trades" in data["paths"]
+
+
+def test_runtime_config_requires_release_fields_when_auth_enabled():
+    prev_auth_enabled = settings.auth_enabled
+    prev_supabase_url = settings.supabase_url
+    prev_supabase_jwt_secret = settings.supabase_jwt_secret
+    prev_ops_alert_target = settings.ops_alert_target
+    prev_db_backup_strategy = settings.db_backup_strategy
+    prev_cors_allow_origins = settings.cors_allow_origins
+
+    try:
+        settings.auth_enabled = True
+        settings.supabase_url = ""
+        settings.supabase_jwt_secret = ""
+        settings.ops_alert_target = ""
+        settings.db_backup_strategy = ""
+        settings.cors_allow_origins = "*"
+
+        errors, warnings = get_runtime_config_issues()
+        assert "SUPABASE_URL is required when AUTH_ENABLED=true" in errors
+        assert "SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true" in errors
+        assert "OPS_ALERT_TARGET is required when AUTH_ENABLED=true" in errors
+        assert "DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true" in errors
+        assert "CORS_ALLOW_ORIGINS is wildcard in auth-enabled mode" in warnings
+    finally:
+        settings.auth_enabled = prev_auth_enabled
+        settings.supabase_url = prev_supabase_url
+        settings.supabase_jwt_secret = prev_supabase_jwt_secret
+        settings.ops_alert_target = prev_ops_alert_target
+        settings.db_backup_strategy = prev_db_backup_strategy
+        settings.cors_allow_origins = prev_cors_allow_origins
 
 
 def test_health_endpoints(client):
