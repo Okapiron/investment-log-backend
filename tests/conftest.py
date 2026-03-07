@@ -52,12 +52,27 @@ def disable_auth_by_default() -> Generator[None, None, None]:
     prev_enabled = settings.auth_enabled
     prev_secret = settings.supabase_jwt_secret
     prev_invite_required = settings.invite_code_required
+    prev_supabase_url = settings.supabase_url
+    prev_ops_alert_target = settings.ops_alert_target
+    prev_db_backup_strategy = settings.db_backup_strategy
+    prev_cors_allow_origins = settings.cors_allow_origins
+    prev_app_version = settings.app_version
     settings.auth_enabled = False
     settings.supabase_jwt_secret = ""
     settings.invite_code_required = False
+    settings.supabase_url = ""
+    settings.ops_alert_target = ""
+    settings.db_backup_strategy = ""
+    settings.cors_allow_origins = "*"
+    settings.app_version = "dev-local"
     try:
         yield
     finally:
         settings.auth_enabled = prev_enabled
         settings.supabase_jwt_secret = prev_secret
         settings.invite_code_required = prev_invite_required
+        settings.supabase_url = prev_supabase_url
+        settings.ops_alert_target = prev_ops_alert_target
+        settings.db_backup_strategy = prev_db_backup_strategy
+        settings.cors_allow_origins = prev_cors_allow_origins
+        settings.app_version = prev_app_version

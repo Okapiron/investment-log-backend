@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
+from app.core.runtime_config import evaluate_runtime_config_issues
 from app.db.models import Fill, InviteCode, Trade
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -64,6 +65,7 @@ def _try_delete_supabase_auth_user(user_id: str) -> tuple[bool, Optional[str]]:
 @router.get("/runtime")
 def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depends(require_invited_auth)):
     _scoped_user_id(claims)
+    config_errors, config_warnings = evaluate_runtime_config_issues(settings)
     db_status = "ok"
     try:
         db.execute(text("SELECT 1"))
@@ -79,6 +81,8 @@ def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depend
             "auth_enabled": bool(settings.auth_enabled),
             "invite_code_required": bool(settings.invite_code_required),
             "rate_limit_enabled": bool(settings.rate_limit_enabled),
+            "config_errors": list(config_errors),
+            "config_warnings": list(config_warnings),
         },
         headers={"Cache-Control": "no-store"},
     )

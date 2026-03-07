@@ -351,6 +351,8 @@ def test_settings_runtime_available_when_auth_disabled(client):
     assert str(body.get("app_version") or "").strip() != ""
     assert body["auth_enabled"] is False
     assert body["invite_code_required"] is False
+    assert body["config_errors"] == []
+    assert body["config_warnings"] == []
 
 
 def test_settings_runtime_requires_auth_when_auth_enabled(client):
@@ -372,6 +374,8 @@ def test_settings_runtime_requires_auth_when_auth_enabled(client):
     assert str(payload.get("app_version") or "").strip() != ""
     assert payload["auth_enabled"] is True
     assert payload["invite_code_required"] is False
+    assert isinstance(payload.get("config_errors"), list)
+    assert isinstance(payload.get("config_warnings"), list)
 
 
 def test_account_asset_snapshot_crud_and_dashboard(client):

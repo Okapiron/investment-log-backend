@@ -206,6 +206,18 @@ def main() -> int:
             checks=checks,
             verbose=verbose,
         )
+        ok &= _check(
+            isinstance(runtime_body.get("config_errors"), list),
+            "settings/runtime includes config_errors list",
+            checks=checks,
+            verbose=verbose,
+        )
+        ok &= _check(
+            isinstance(runtime_body.get("config_warnings"), list),
+            "settings/runtime includes config_warnings list",
+            checks=checks,
+            verbose=verbose,
+        )
 
     status, _, trades_headers = _request_json(f"{base}{prefix}/trades")
     has_rate_headers = (
