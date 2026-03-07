@@ -262,7 +262,7 @@ cd backend
 
 ### 6.3 Settings
 - `Account` 情報が取得できる
-- `Runtime` に Backend/Frontend Version と release設定の warning/error が表示される
+- `Runtime` に `Release Status (OK/WARNING/ERROR)` と Backend/Frontend Version、release設定の warning/error が表示される
 - JSON/CSV エクスポートがダウンロードできる
 - データ削除で対象ユーザーの trade が削除される
 - データ削除時、使用済み招待コードは「消費済みのまま」ユーザー紐付けのみ匿名化される

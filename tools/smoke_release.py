@@ -201,6 +201,12 @@ def main() -> int:
         )
     if runtime_status == 200:
         ok &= _check(
+            str(runtime_body.get("release_status") or "") in {"ok", "warning", "error"},
+            "settings/runtime includes release_status",
+            checks=checks,
+            verbose=verbose,
+        )
+        ok &= _check(
             bool(str(runtime_body.get("app_version") or "").strip()),
             "settings/runtime includes app version",
             checks=checks,

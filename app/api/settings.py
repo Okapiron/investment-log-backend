@@ -73,10 +73,17 @@ def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depend
         db_status = "ng"
 
     status = "ok" if db_status == "ok" else "ng"
+    if db_status != "ok" or len(config_errors) > 0:
+        release_status = "error"
+    elif len(config_warnings) > 0:
+        release_status = "warning"
+    else:
+        release_status = "ok"
     return JSONResponse(
         {
             "status": status,
             "db": db_status,
+            "release_status": release_status,
             "app_version": str(settings.app_version or "").strip() or "unknown",
             "auth_enabled": bool(settings.auth_enabled),
             "invite_code_required": bool(settings.invite_code_required),

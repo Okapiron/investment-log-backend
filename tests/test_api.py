@@ -348,6 +348,7 @@ def test_settings_runtime_available_when_auth_disabled(client):
     body = res.json()
     assert body["status"] in {"ok", "ng"}
     assert body["db"] in {"ok", "ng"}
+    assert body["release_status"] in {"ok", "warning", "error"}
     assert str(body.get("app_version") or "").strip() != ""
     assert body["auth_enabled"] is False
     assert body["invite_code_required"] is False
@@ -371,6 +372,7 @@ def test_settings_runtime_requires_auth_when_auth_enabled(client):
     payload = with_auth.json()
     assert payload["status"] in {"ok", "ng"}
     assert payload["db"] in {"ok", "ng"}
+    assert payload["release_status"] in {"ok", "warning", "error"}
     assert str(payload.get("app_version") or "").strip() != ""
     assert payload["auth_enabled"] is True
     assert payload["invite_code_required"] is False
