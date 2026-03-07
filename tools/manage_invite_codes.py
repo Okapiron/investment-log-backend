@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.core.invite_admin import classify_invite_code, list_invite_codes, revoke_invite_code
+from app.core.invite_admin import classify_invite_code, list_invite_codes, purge_invite_codes, revoke_invite_code
 from app.db.session import SessionLocal
 
 
@@ -49,6 +49,15 @@ def main() -> int:
     target_group.add_argument("--id", type=int, help="invite code row id")
     target_group.add_argument("--code", type=str, help="raw invite code")
 
+    purge_parser = sub.add_parser("purge", help="delete old used/expired invite codes")
+    purge_parser.add_argument(
+        "--mode",
+        default="expired",
+        choices=["expired", "used", "all"],
+        help="purge target (default: expired)",
+    )
+    purge_parser.add_argument("--days", type=int, default=30, help="delete rows older than days (default: 30)")
+
     args = parser.parse_args()
     with SessionLocal() as db:
         if args.command == "list":
@@ -66,6 +75,11 @@ def main() -> int:
                 return 1
             status = classify_invite_code(row)
             print(f"revoked id={row.id} status={status}")
+            return 0
+
+        if args.command == "purge":
+            deleted = purge_invite_codes(db, mode=args.mode, older_than_days=args.days)
+            print(f"purged={deleted} mode={args.mode} days={args.days}")
             return 0
 
     return 0

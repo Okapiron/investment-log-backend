@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.invites import hash_invite_code, normalize_invite_code
@@ -87,3 +87,31 @@ def revoke_invite_code(
     db.commit()
     db.refresh(row)
     return row
+
+
+def purge_invite_codes(
+    db: Session,
+    *,
+    mode: str = "expired",
+    older_than_days: int = 30,
+    now: datetime | None = None,
+) -> int:
+    normalized_mode = str(mode or "expired").strip().lower()
+    if normalized_mode not in {"expired", "used", "all"}:
+        raise ValueError("mode must be one of: expired, used, all")
+
+    days = max(0, int(older_than_days or 0))
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(days=days)
+
+    stmt = delete(InviteCode).where(InviteCode.created_at <= cutoff)
+    if normalized_mode == "expired":
+        stmt = stmt.where(InviteCode.expires_at <= current, InviteCode.used_count <= 0)
+    elif normalized_mode == "used":
+        stmt = stmt.where(InviteCode.used_count > 0)
+    else:
+        stmt = stmt.where((InviteCode.expires_at <= current) | (InviteCode.used_count > 0))
+
+    result = db.execute(stmt)
+    db.commit()
+    return int(result.rowcount or 0)

@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.core.invite_admin import classify_invite_code, list_invite_codes, revoke_invite_code
+from app.core.invite_admin import classify_invite_code, list_invite_codes, purge_invite_codes, revoke_invite_code
 from app.core.invites import hash_invite_code
 from app.db.base import Base
 from app.db.models import InviteCode
@@ -105,3 +105,50 @@ def test_revoke_invite_code_not_found_returns_none():
     SessionLocal = _build_session()
     with SessionLocal() as db:
         assert revoke_invite_code(db, code="NOCODE999") is None
+
+
+def test_purge_invite_codes_by_mode_and_age():
+    SessionLocal = _build_session()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=40)
+
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                InviteCode(
+                    code_hash=hash_invite_code("OLDXP0001"),
+                    expires_at=now - timedelta(days=10),
+                    max_uses=1,
+                    used_count=0,
+                    created_at=old,
+                    updated_at=old,
+                ),
+                InviteCode(
+                    code_hash=hash_invite_code("OLDUSD001"),
+                    expires_at=now + timedelta(days=10),
+                    max_uses=1,
+                    used_count=1,
+                    used_by_user_id="u1",
+                    created_at=old,
+                    updated_at=old,
+                ),
+                InviteCode(
+                    code_hash=hash_invite_code("NEWXP0001"),
+                    expires_at=now - timedelta(days=1),
+                    max_uses=1,
+                    used_count=0,
+                    created_at=now - timedelta(days=5),
+                    updated_at=now - timedelta(days=5),
+                ),
+            ]
+        )
+        db.commit()
+
+        deleted_expired = purge_invite_codes(db, mode="expired", older_than_days=30, now=now)
+        assert deleted_expired == 1
+
+        deleted_used = purge_invite_codes(db, mode="used", older_than_days=30, now=now)
+        assert deleted_used == 1
+
+        deleted_all = purge_invite_codes(db, mode="all", older_than_days=0, now=now)
+        assert deleted_all == 1

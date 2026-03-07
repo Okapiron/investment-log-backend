@@ -133,6 +133,19 @@ cd backend
 .venv/bin/python tools/manage_invite_codes.py revoke --id 12
 ```
 
+### 4.6 古いコードのクリーンアップ
+期限切れで30日より古いものを削除:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py purge --mode expired --days 30
+```
+
+使用済みで30日より古いものを削除:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py purge --mode used --days 30
+```
+
 ## 5. リリース手順 (推奨順)
 1. backend の env を更新
 2. frontend の env を更新
