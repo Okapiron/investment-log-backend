@@ -230,6 +230,18 @@ def main() -> int:
             checks=checks,
             verbose=verbose,
         )
+        ok &= _check(
+            ("invite_active_count" in runtime_body),
+            "settings/runtime includes invite_active_count field",
+            checks=checks,
+            verbose=verbose,
+        )
+        ok &= _check(
+            ("invite_onboarding_ready" in runtime_body),
+            "settings/runtime includes invite_onboarding_ready field",
+            checks=checks,
+            verbose=verbose,
+        )
 
     status, _, trades_headers = _request_json(f"{base}{prefix}/trades")
     has_rate_headers = (

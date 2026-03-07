@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_session, require_invited_auth
@@ -65,10 +65,41 @@ def _try_delete_supabase_auth_user(user_id: str) -> tuple[bool, Optional[str]]:
 @router.get("/runtime")
 def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depends(require_invited_auth)):
     _scoped_user_id(claims)
+    config_errors: list[str]
+    config_warnings: list[str]
     config_errors, config_warnings = evaluate_runtime_config_issues(settings)
     db_status = "ok"
+    invite_active_count: Optional[int] = None
+    invite_onboarding_ready: Optional[bool] = None
     try:
         db.execute(text("SELECT 1"))
+        if settings.auth_enabled and settings.invite_code_required:
+            inspector = inspect(db.connection())
+            tables = set(inspector.get_table_names())
+            if "invite_codes" not in tables:
+                config_errors.append("invite_codes table is missing (run alembic upgrade head)")
+            else:
+                invite_cols = {c.get("name") for c in inspector.get_columns("invite_codes")}
+                if "used_at" not in invite_cols:
+                    config_warnings.append("invite_codes.used_at is missing (latest migration not applied)")
+                active_invites = int(
+                    db.execute(
+                        text(
+                            """
+                            SELECT COUNT(1)
+                            FROM invite_codes
+                            WHERE expires_at > :now_ts
+                              AND used_count < max_uses
+                            """
+                        ),
+                        {"now_ts": datetime.now(timezone.utc)},
+                    ).scalar()
+                    or 0
+                )
+                invite_active_count = active_invites
+                invite_onboarding_ready = active_invites > 0
+                if active_invites <= 0:
+                    config_warnings.append("no active invite codes found (invite onboarding will be blocked)")
     except Exception:
         db_status = "ng"
 
@@ -88,6 +119,8 @@ def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depend
             "app_version": str(settings.app_version or "").strip() or "unknown",
             "auth_enabled": bool(settings.auth_enabled),
             "invite_code_required": bool(settings.invite_code_required),
+            "invite_active_count": invite_active_count,
+            "invite_onboarding_ready": invite_onboarding_ready,
             "rate_limit_enabled": bool(settings.rate_limit_enabled),
             "config_errors": list(config_errors),
             "config_warnings": list(config_warnings),

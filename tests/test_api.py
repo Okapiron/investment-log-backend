@@ -353,6 +353,8 @@ def test_settings_runtime_available_when_auth_disabled(client):
     assert str(body.get("app_version") or "").strip() != ""
     assert body["auth_enabled"] is False
     assert body["invite_code_required"] is False
+    assert body["invite_active_count"] is None
+    assert body["invite_onboarding_ready"] is None
     assert body["config_errors"] == []
     assert body["config_warnings"] == []
 
@@ -378,6 +380,8 @@ def test_settings_runtime_requires_auth_when_auth_enabled(client):
     assert str(payload.get("app_version") or "").strip() != ""
     assert payload["auth_enabled"] is True
     assert payload["invite_code_required"] is False
+    assert payload["invite_active_count"] is None
+    assert payload["invite_onboarding_ready"] is None
     assert isinstance(payload.get("config_errors"), list)
     assert isinstance(payload.get("config_warnings"), list)
 
@@ -415,6 +419,44 @@ def test_settings_runtime_release_status_error_when_required_config_missing(clie
     assert "SUPABASE_URL is required when AUTH_ENABLED=true" in payload["config_errors"]
     assert "OPS_ALERT_TARGET is required when AUTH_ENABLED=true" in payload["config_errors"]
     assert "DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true" in payload["config_errors"]
+
+
+def test_settings_runtime_invite_readiness_when_invite_required_and_no_active_codes(client):
+    settings.auth_enabled = True
+    settings.invite_code_required = True
+    settings.supabase_jwt_secret = "test-secret"
+    settings.supabase_url = "https://demo.supabase.co"
+    settings.ops_alert_target = "slack:#ops"
+    settings.db_backup_strategy = "render-managed-daily"
+    settings.supabase_service_role_key = "service-key"
+    settings.cors_allow_origins = "https://investment-log-frontend.vercel.app"
+    settings.rate_limit_enabled = True
+
+    session_local = app.state.testing_session_local
+    with session_local() as db:
+        db.add(
+            InviteCode(
+                code_hash=hash_invite_code("RUNTIMEUSED"),
+                expires_at=datetime.now(timezone.utc) + timedelta(days=3),
+                max_uses=1,
+                used_count=1,
+                used_by_user_id="runtime-invite",
+                used_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            )
+        )
+        db.commit()
+
+    token = _build_hs256_jwt(
+        {"sub": "runtime-invite", "invite_code": "RUNTIMEUSED", "exp": int(time.time()) + 3600},
+        "test-secret",
+    )
+    res = client.get("/api/v1/settings/runtime", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["invite_code_required"] is True
+    assert payload["invite_active_count"] == 0
+    assert payload["invite_onboarding_ready"] is False
+    assert any("no active invite codes found" in w for w in payload["config_warnings"])
 
 
 def test_account_asset_snapshot_crud_and_dashboard(client):
