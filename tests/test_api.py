@@ -31,6 +31,7 @@ def test_openapi(client):
     res = client.get("/openapi.json")
     assert res.status_code == 200
     data = res.json()
+    assert data.get("info", {}).get("title") == settings.app_name
     assert "/api/v1/dashboard/monthly" in data["paths"]
     assert "/api/v1/monthly" in data["paths"]
     assert "/api/v1/snapshots/copy-latest" in data["paths"]

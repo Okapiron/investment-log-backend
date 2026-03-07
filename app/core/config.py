@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Asset Management MVP"
+    app_name: str = "Trade Trace API"
     api_prefix: str = "/api/v1"
     database_url: str = Field(
         default="sqlite:///./app.db",
