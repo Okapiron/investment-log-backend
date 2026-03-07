@@ -71,10 +71,11 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
             key = (principal_key, self._minute)
             self._counts[key] += 1
             if self._counts[key] > self.max_per_minute:
+                retry_after = max(1, 60 - int(time.time() % 60))
                 return JSONResponse(
                     {"detail": "rate limit exceeded"},
                     status_code=429,
-                    headers={"Retry-After": "60"},
+                    headers={"Retry-After": str(retry_after)},
                 )
 
         return await call_next(request)

@@ -56,6 +56,8 @@ def test_options_preflight_does_not_consume_rate_limit():
 
     second = client.get("/api/v1/ping")
     assert second.status_code == 429
+    retry_after = int(second.headers.get("retry-after") or "0")
+    assert 1 <= retry_after <= 60
 
 
 def test_health_endpoint_is_excluded_from_rate_limit():

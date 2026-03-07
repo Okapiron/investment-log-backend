@@ -20,7 +20,7 @@
 - `RATE_LIMIT_ENABLED=true`
 - `RATE_LIMIT_PER_MINUTE=120`
   - auth有効時はユーザー単位を優先し、未認証時はIP単位で制限
-  - 超過時は `429` と `Retry-After` ヘッダを返す
+  - 超過時は `429` と残り秒数の `Retry-After` ヘッダを返す
 - `OPS_ALERT_TARGET`:
   - 例: `slack:#tradetrace-alerts` / `email:ops@example.com`
 - `DB_BACKUP_STRATEGY`:
