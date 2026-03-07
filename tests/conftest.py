@@ -51,10 +51,13 @@ def client() -> Generator[TestClient, None, None]:
 def disable_auth_by_default() -> Generator[None, None, None]:
     prev_enabled = settings.auth_enabled
     prev_secret = settings.supabase_jwt_secret
+    prev_invite_required = settings.invite_code_required
     settings.auth_enabled = False
     settings.supabase_jwt_secret = ""
+    settings.invite_code_required = False
     try:
         yield
     finally:
         settings.auth_enabled = prev_enabled
         settings.supabase_jwt_secret = prev_secret
+        settings.invite_code_required = prev_invite_required

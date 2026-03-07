@@ -337,6 +337,37 @@ def test_settings_export_and_delete_are_user_scoped(client):
     assert list_b.json()["total"] == 1
 
 
+def test_settings_runtime_available_when_auth_disabled(client):
+    res = client.get("/api/v1/settings/runtime")
+    assert res.status_code == 200
+    assert res.headers.get("cache-control") == "no-store"
+    body = res.json()
+    assert body["status"] in {"ok", "ng"}
+    assert body["db"] in {"ok", "ng"}
+    assert body["auth_enabled"] is False
+    assert body["invite_code_required"] is False
+
+
+def test_settings_runtime_requires_auth_when_auth_enabled(client):
+    settings.auth_enabled = True
+    settings.invite_code_required = False
+    settings.supabase_jwt_secret = "test-secret"
+
+    no_auth = client.get("/api/v1/settings/runtime")
+    assert no_auth.status_code == 401
+    assert no_auth.headers.get("cache-control") == "no-store"
+
+    token = _build_hs256_jwt({"sub": "runtime-user", "exp": int(time.time()) + 3600}, "test-secret")
+    with_auth = client.get("/api/v1/settings/runtime", headers={"Authorization": f"Bearer {token}"})
+    assert with_auth.status_code == 200
+    assert with_auth.headers.get("cache-control") == "no-store"
+    payload = with_auth.json()
+    assert payload["status"] in {"ok", "ng"}
+    assert payload["db"] in {"ok", "ng"}
+    assert payload["auth_enabled"] is True
+    assert payload["invite_code_required"] is False
+
+
 def test_account_asset_snapshot_crud_and_dashboard(client):
     account = client.post(
         "/api/v1/accounts",
