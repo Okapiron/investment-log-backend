@@ -1,12 +1,13 @@
 from pathlib import Path
 import argparse
+from datetime import datetime, timezone
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from app.core.config import settings
 from app.db.session import engine
@@ -70,6 +71,22 @@ def main() -> int:
                         invite_cols = {c.get("name") for c in inspector.get_columns("invite_codes")}
                         if "used_at" not in invite_cols:
                             warnings.append("invite_codes.used_at is missing (latest migration not applied)")
+                        active_invites = int(
+                            conn.execute(
+                                text(
+                                    """
+                                    SELECT COUNT(1)
+                                    FROM invite_codes
+                                    WHERE expires_at > :now_ts
+                                      AND used_count < max_uses
+                                    """
+                                ),
+                                {"now_ts": datetime.now(timezone.utc)},
+                            ).scalar()
+                            or 0
+                        )
+                        if active_invites <= 0:
+                            warnings.append("no active invite codes found (invite onboarding will be blocked)")
         except Exception as e:
             errors.append(f"database schema check failed: {e}")
 

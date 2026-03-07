@@ -92,6 +92,7 @@ cd backend
 ```
 
 `AUTH_ENABLED=true` で `RATE_LIMIT_ENABLED=false` の場合は warning が出る。
+`INVITE_CODE_REQUIRED=true` で有効な招待コードが0件でも warning が出る。
 
 公開前チェック一括実行（推奨）:
 ```bash
