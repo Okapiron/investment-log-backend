@@ -9,6 +9,11 @@ from fastapi import APIRouter, HTTPException, Query
 from app.schemas.price import PriceBarRead, PriceResponse
 
 router = APIRouter(prefix="/prices", tags=["prices"])
+INTERVAL_TO_STOOQ = {
+    "1d": "d",
+    "1w": "w",
+    "1m": "m",
+}
 
 
 def _to_stooq_symbol(market: str, symbol: str) -> str:
@@ -42,11 +47,12 @@ def get_prices(
     symbol: str = Query(..., min_length=1),
     interval: str = Query(default="1d"),
 ):
-    if interval != "1d":
-        raise HTTPException(status_code=422, detail="interval currently supports only 1d")
+    stooq_interval = INTERVAL_TO_STOOQ.get(interval)
+    if stooq_interval is None:
+        raise HTTPException(status_code=422, detail="interval currently supports only 1d, 1w, 1m")
 
     stooq_symbol = _to_stooq_symbol(market, symbol)
-    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i=d"
+    url = f"https://stooq.com/q/d/l/?s={stooq_symbol}&i={stooq_interval}"
 
     try:
         with urlopen(url, timeout=10) as res:
