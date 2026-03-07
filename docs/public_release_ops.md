@@ -35,6 +35,12 @@
 - `VITE_SUPABASE_ANON_KEY`:
   - Supabase anon key
 
+公開前に Frontend env を検証:
+```bash
+cd frontend
+npm run check:release-env -- --strict
+```
+
 ## 2. Supabase Auth 設定
 
 ### 2.1 Site URL
