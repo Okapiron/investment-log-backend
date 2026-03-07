@@ -27,8 +27,8 @@ def main() -> int:
     parser.add_argument(
         "--expect-auth-required",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="expect trades endpoint to require auth in smoke check (default: true)",
+        default=None,
+        help="expect trades endpoint to require auth in smoke check (default: auto from AUTH_ENABLED)",
     )
     args = parser.parse_args()
 
@@ -39,10 +39,13 @@ def main() -> int:
     if rc != 0:
         return rc
 
+    auth_enabled = _is_truthy(os.getenv("AUTH_ENABLED")) or _is_truthy(os.getenv("APP_AUTH_ENABLED"))
+    expect_auth_required = bool(args.expect_auth_required) if args.expect_auth_required is not None else auth_enabled
+
     smoke_cmd = [python_cmd, "tools/smoke_release.py", "--base", str(args.base)]
     if _is_truthy(os.getenv("RATE_LIMIT_ENABLED")) or _is_truthy(os.getenv("APP_RATE_LIMIT_ENABLED")):
         smoke_cmd.append("--expect-rate-limit-headers")
-    if not args.expect_auth_required:
+    if not expect_auth_required:
         smoke_cmd.append("--no-expect-auth-required")
     rc = _run(smoke_cmd)
     if rc != 0:

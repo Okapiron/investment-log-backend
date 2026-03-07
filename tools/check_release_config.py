@@ -37,6 +37,14 @@ def main() -> int:
             warnings.append("database_url is SQLite in auth-enabled mode (Postgres is recommended for public release)")
         if _is_empty(settings.supabase_url):
             errors.append("SUPABASE_URL is required when AUTH_ENABLED=true")
+        else:
+            supabase_url = str(settings.supabase_url or "").strip()
+            parsed_supabase = urlparse(supabase_url)
+            if parsed_supabase.scheme.lower() != "https":
+                warnings.append("SUPABASE_URL should use https")
+            host = str(parsed_supabase.hostname or "").lower()
+            if host and not host.endswith(".supabase.co"):
+                warnings.append("SUPABASE_URL host does not look like *.supabase.co")
         if _is_empty(settings.supabase_jwt_secret):
             errors.append("SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true")
         if _is_empty(settings.ops_alert_target):
