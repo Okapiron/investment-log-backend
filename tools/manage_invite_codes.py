@@ -57,6 +57,7 @@ def main() -> int:
         help="purge target (default: expired)",
     )
     purge_parser.add_argument("--days", type=int, default=30, help="delete rows older than days (default: 30)")
+    purge_parser.add_argument("--dry-run", action="store_true", help="preview count without deleting")
 
     args = parser.parse_args()
     with SessionLocal() as db:
@@ -78,8 +79,16 @@ def main() -> int:
             return 0
 
         if args.command == "purge":
-            deleted = purge_invite_codes(db, mode=args.mode, older_than_days=args.days)
-            print(f"purged={deleted} mode={args.mode} days={args.days}")
+            deleted = purge_invite_codes(
+                db,
+                mode=args.mode,
+                older_than_days=args.days,
+                dry_run=bool(args.dry_run),
+            )
+            if bool(args.dry_run):
+                print(f"purge_preview={deleted} mode={args.mode} days={args.days}")
+            else:
+                print(f"purged={deleted} mode={args.mode} days={args.days}")
             return 0
 
     return 0

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -152,3 +152,28 @@ def test_purge_invite_codes_by_mode_and_age():
 
         deleted_all = purge_invite_codes(db, mode="all", older_than_days=0, now=now)
         assert deleted_all == 1
+
+
+def test_purge_invite_codes_dry_run_keeps_data():
+    SessionLocal = _build_session()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=45)
+
+    with SessionLocal() as db:
+        db.add(
+            InviteCode(
+                code_hash=hash_invite_code("DRYRUN001"),
+                expires_at=now - timedelta(days=5),
+                max_uses=1,
+                used_count=0,
+                created_at=old,
+                updated_at=old,
+            )
+        )
+        db.commit()
+
+        preview = purge_invite_codes(db, mode="expired", older_than_days=30, dry_run=True, now=now)
+        assert preview == 1
+
+        remains = db.scalar(select(InviteCode).where(InviteCode.code_hash == hash_invite_code("DRYRUN001")))
+        assert remains is not None

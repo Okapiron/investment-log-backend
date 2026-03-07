@@ -159,6 +159,12 @@ cd backend
 .venv/bin/python tools/manage_invite_codes.py purge --mode used --days 30
 ```
 
+削除前に件数だけ確認:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py purge --mode expired --days 30 --dry-run
+```
+
 ## 5. リリース手順 (推奨順)
 1. backend の env を更新
 2. frontend の env を更新

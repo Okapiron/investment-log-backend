@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.invites import hash_invite_code, normalize_invite_code
@@ -94,6 +94,7 @@ def purge_invite_codes(
     *,
     mode: str = "expired",
     older_than_days: int = 30,
+    dry_run: bool = False,
     now: datetime | None = None,
 ) -> int:
     normalized_mode = str(mode or "expired").strip().lower()
@@ -104,13 +105,19 @@ def purge_invite_codes(
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(days=days)
 
-    stmt = delete(InviteCode).where(InviteCode.created_at <= cutoff)
+    conditions = [InviteCode.created_at <= cutoff]
     if normalized_mode == "expired":
-        stmt = stmt.where(InviteCode.expires_at <= current, InviteCode.used_count <= 0)
+        conditions.extend([InviteCode.expires_at <= current, InviteCode.used_count <= 0])
     elif normalized_mode == "used":
-        stmt = stmt.where(InviteCode.used_count > 0)
+        conditions.append(InviteCode.used_count > 0)
     else:
-        stmt = stmt.where((InviteCode.expires_at <= current) | (InviteCode.used_count > 0))
+        conditions.append((InviteCode.expires_at <= current) | (InviteCode.used_count > 0))
+
+    if dry_run:
+        count_stmt = select(func.count()).select_from(InviteCode).where(*conditions)
+        return int(db.scalar(count_stmt) or 0)
+
+    stmt = delete(InviteCode).where(*conditions)
 
     result = db.execute(stmt)
     db.commit()
