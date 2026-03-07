@@ -1,4 +1,5 @@
 from functools import cmp_to_key
+import unicodedata
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -135,7 +136,7 @@ def _is_open_trade(item: TradeRead) -> bool:
 
 
 def _is_pending_review(item: TradeRead) -> bool:
-    return (not _is_open_trade(item)) and bool(item.closed_at) and (not bool(item.review_done))
+    return not bool(item.review_done)
 
 
 def _profit_value(item: TradeRead) -> Optional[float]:
@@ -177,6 +178,35 @@ def _compare_nullable(a, b, asc: bool) -> int:
     if a > b:
         return 1 if asc else -1
     return 0
+
+
+def _katakana_to_hiragana(text: str) -> str:
+    chars = []
+    for ch in text:
+        code = ord(ch)
+        if 0x30A1 <= code <= 0x30F6:
+            chars.append(chr(code - 0x60))
+        else:
+            chars.append(ch)
+    return "".join(chars)
+
+
+def _normalize_name_for_sort(text: str) -> str:
+    # NFKC: 全角英数や記号の揺れを吸収し、JPはひらがな寄せで五十音順に近づける
+    normalized = unicodedata.normalize("NFKC", str(text or "").strip()).casefold()
+    return _katakana_to_hiragana(normalized)
+
+
+def _name_sort_key(item: TradeRead):
+    base_name = (item.name or "").strip()
+    fallback_symbol = (item.symbol or "").strip()
+    label = base_name or fallback_symbol
+    if not label:
+        return None
+
+    # 混在時は JP -> US の順でグルーピングし、その中で名前順
+    market_rank = 0 if item.market == "JP" else 1 if item.market == "US" else 2
+    return (market_rank, _normalize_name_for_sort(label), fallback_symbol.casefold())
 
 
 @router.get("", response_model=TradeListRead)
@@ -316,8 +346,7 @@ def list_trades(
         if normalized_sort == "sell_date":
             return item.closed_at or item.created_at
         if normalized_sort == "name":
-            name = (item.name or "").strip()
-            return name if name else None
+            return _name_sort_key(item)
         if normalized_sort == "profit":
             return _profit_value(item)
         if normalized_sort == "roi":
@@ -422,6 +451,13 @@ def update_trade(trade_id: int, payload: TradeUpdate, db: Session = Depends(get_
     trade = fetch_trade(db, trade_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
+
+    patch_data = payload.model_dump(exclude_unset=True)
+    review_keys = {"review_done", "reviewed_at"}
+    has_review_update = any(k in patch_data for k in review_keys)
+    has_regular_update = any(k not in review_keys for k in patch_data.keys())
+    if has_review_update and has_regular_update:
+        raise HTTPException(status_code=422, detail="review fields must be updated separately")
 
     update_trade_with_fills(db, trade, payload)
 

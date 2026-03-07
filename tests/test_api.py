@@ -251,6 +251,8 @@ def test_trades_create_open_position_buy_only(client):
         json={
             "market": "US",
             "symbol": "AAPL",
+            "review_done": True,
+            "reviewed_at": "2026-02-11",
             "fills": [
                 {"side": "buy", "date": "2026-02-10", "price": 200, "qty": 5, "fee": 0},
             ],
@@ -265,6 +267,8 @@ def test_trades_create_open_position_buy_only(client):
     assert body["profit_currency"] == "USD"
     assert body["holding_days"] is None
     assert len(body["fills"]) == 1
+    assert body["review_done"] is False
+    assert body["reviewed_at"] is None
 
 
 def test_trades_us_closed_returns_profit_usd(client):
@@ -328,11 +332,23 @@ def test_trades_review_filter_and_update(client):
     assert created.status_code == 201
     trade_id = created.json()["id"]
 
+    open_created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "US",
+            "symbol": "QQQ",
+            "fills": [
+                {"side": "buy", "date": "2026-03-03", "price": 100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert open_created.status_code == 201
+
     pending = client.get("/api/v1/trades", params={"review": "pending"})
     assert pending.status_code == 200
     pending_body = pending.json()
-    assert pending_body["total"] == 1
-    assert pending_body["stats"]["pending_review_count"] == 1
+    assert pending_body["total"] == 2
+    assert pending_body["stats"]["pending_review_count"] == 2
 
     updated = client.patch(
         f"/api/v1/trades/{trade_id}",
@@ -348,3 +364,152 @@ def test_trades_review_filter_and_update(client):
     assert done_body["total"] == 1
     assert done_body["items"][0]["review_done"] is True
     assert done_body["stats"]["pending_review_count"] == 0
+
+
+def test_trade_detail_update_can_close_open_trade_and_keep_review_pending(client):
+    created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "7203",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 1000, "qty": 10, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+    assert created.json()["review_done"] is False
+
+    closed = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={
+            "buy_date": "2026-03-01",
+            "buy_price": 1000,
+            "buy_qty": 10,
+            "sell_date": "2026-03-08",
+            "sell_price": 1100,
+            "sell_qty": 10,
+            "notes_sell": "target hit",
+            "notes_review": "after close",
+            "rating": 4,
+        },
+    )
+    assert closed.status_code == 200
+    body = closed.json()
+    assert body["is_open"] is False
+    assert body["closed_at"] == "2026-03-08"
+    assert body["review_done"] is False
+    assert body["profit_jpy"] == 1000
+
+
+def test_trade_detail_update_rejects_partial_sell_and_reopen(client):
+    open_created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "US",
+            "symbol": "AAPL",
+            "fills": [
+                {"side": "buy", "date": "2026-04-01", "price": 100, "qty": 5, "fee": 0},
+            ],
+        },
+    )
+    assert open_created.status_code == 201
+    open_id = open_created.json()["id"]
+
+    partial = client.patch(
+        f"/api/v1/trades/{open_id}",
+        json={
+            "buy_date": "2026-04-01",
+            "buy_price": 100,
+            "buy_qty": 5,
+            "sell_date": "2026-04-05",
+        },
+    )
+    assert partial.status_code == 422
+
+    closed_created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "6501",
+            "fills": [
+                {"side": "buy", "date": "2026-04-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-04-02", "price": 1100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert closed_created.status_code == 201
+    closed_id = closed_created.json()["id"]
+
+    reopen = client.patch(
+        f"/api/v1/trades/{closed_id}",
+        json={
+            "buy_date": "2026-04-01",
+            "buy_price": 1000,
+            "buy_qty": 1,
+        },
+    )
+    assert reopen.status_code == 422
+
+    mixed_review = client.patch(
+        f"/api/v1/trades/{closed_id}",
+        json={"rating": 5, "review_done": True},
+    )
+    assert mixed_review.status_code == 422
+
+
+def test_trades_name_sort_groups_jp_and_us(client):
+    payloads = [
+        {
+            "market": "JP",
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "fills": [
+                {"side": "buy", "date": "2026-05-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-05-02", "price": 1010, "qty": 1, "fee": 0},
+            ],
+        },
+        {
+            "market": "JP",
+            "symbol": "6479",
+            "name": "アイシン",
+            "fills": [
+                {"side": "buy", "date": "2026-05-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-05-02", "price": 1010, "qty": 1, "fee": 0},
+            ],
+        },
+        {
+            "market": "US",
+            "symbol": "AAPL",
+            "name": "Apple Inc",
+            "fills": [
+                {"side": "buy", "date": "2026-05-01", "price": 100, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-05-02", "price": 101, "qty": 1, "fee": 0},
+            ],
+        },
+        {
+            "market": "US",
+            "symbol": "MSFT",
+            "name": "Microsoft Corp",
+            "fills": [
+                {"side": "buy", "date": "2026-05-01", "price": 100, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-05-02", "price": 101, "qty": 1, "fee": 0},
+            ],
+        },
+    ]
+    for p in payloads:
+        res = client.post("/api/v1/trades", json=p)
+        assert res.status_code == 201
+
+    asc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "asc", "limit": 20, "offset": 0})
+    assert asc.status_code == 200
+    asc_items = asc.json()["items"]
+    assert [x["market"] for x in asc_items] == ["JP", "JP", "US", "US"]
+    assert [x["symbol"] for x in asc_items] == ["6479", "7203", "AAPL", "MSFT"]
+
+    desc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "desc", "limit": 20, "offset": 0})
+    assert desc.status_code == 200
+    desc_items = desc.json()["items"]
+    assert [x["market"] for x in desc_items] == ["US", "US", "JP", "JP"]
+    assert [x["symbol"] for x in desc_items] == ["MSFT", "AAPL", "7203", "6479"]

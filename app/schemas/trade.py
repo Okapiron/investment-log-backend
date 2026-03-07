@@ -48,6 +48,12 @@ class TradeUpdate(BaseModel):
     chart_image_url: Optional[str] = None
     review_done: Optional[bool] = None
     reviewed_at: Optional[str] = None
+    buy_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
+    buy_price: Optional[int] = Field(default=None, ge=0)
+    buy_qty: Optional[int] = Field(default=None, ge=1)
+    sell_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
+    sell_price: Optional[int] = Field(default=None, ge=0)
+    sell_qty: Optional[int] = Field(default=None, ge=1)
     fills: Optional[list[FillInput]] = None
 
 

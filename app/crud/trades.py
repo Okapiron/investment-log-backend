@@ -40,8 +40,12 @@ def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optio
 
     if buy is None:
         raise HTTPException(status_code=422, detail="fills must include buy")
+    if buy.price <= 0:
+        raise HTTPException(status_code=422, detail="buy.price must be greater than 0")
 
     if sell is not None:
+        if sell.price <= 0:
+            raise HTTPException(status_code=422, detail="sell.price must be greater than 0")
         if buy.qty != sell.qty:
             raise HTTPException(status_code=422, detail="buy.qty and sell.qty must match")
 
@@ -76,8 +80,9 @@ def create_trade_with_fills(db: Session, payload: TradeCreate) -> Trade:
         rating=payload.rating,
         tags=payload.tags,
         chart_image_url=payload.chart_image_url,
-        review_done=bool(payload.review_done),
-        reviewed_at=payload.reviewed_at,
+        # New trades are always pending review by design.
+        review_done=False,
+        reviewed_at=None,
         opened_at=buy_input.date,
         closed_at=sell_input.date if sell_input is not None else "",
         created_at=_utc_now_iso(),
@@ -117,12 +122,34 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
         _validate_market(data["market"])
 
     fills_payload = data.pop("fills", None)
+    buy_date = data.pop("buy_date", None)
+    buy_price = data.pop("buy_price", None)
+    buy_qty = data.pop("buy_qty", None)
+    sell_date = data.pop("sell_date", None)
+    sell_price = data.pop("sell_price", None)
+    sell_qty = data.pop("sell_qty", None)
+
+    has_trade_fill_fields = any(v is not None for v in [buy_date, buy_price, buy_qty, sell_date, sell_price, sell_qty])
 
     for key, value in data.items():
         setattr(trade, key, value)
 
-    if fills_payload is not None:
-        normalized = [FillInput(**item) if isinstance(item, dict) else item for item in fills_payload]
+    if fills_payload is not None or has_trade_fill_fields:
+        normalized = None
+        if fills_payload is not None:
+            normalized = [FillInput(**item) if isinstance(item, dict) else item for item in fills_payload]
+        else:
+            if buy_date is None or buy_price is None or buy_qty is None:
+                raise HTTPException(status_code=422, detail="buy_date, buy_price and buy_qty are required")
+
+            has_any_sell = sell_date is not None or sell_price is not None or sell_qty is not None
+            has_all_sell = sell_date is not None and sell_price is not None and sell_qty is not None
+            if has_any_sell and not has_all_sell:
+                raise HTTPException(status_code=422, detail="sell_date, sell_price and sell_qty must be all set together")
+            normalized = [FillInput(side="buy", date=buy_date, price=buy_price, qty=buy_qty, fee=0)]
+            if has_all_sell:
+                normalized.append(FillInput(side="sell", date=sell_date, price=sell_price, qty=sell_qty, fee=0))
+
         buy_input, sell_input = _extract_buy_sell_optional(normalized)
 
         existing = {fill.side: fill for fill in trade.fills}
@@ -147,7 +174,7 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
             sell_fill.qty = sell_input.qty
             sell_fill.fee = sell_input.fee or 0
         elif sell_fill is not None:
-            db.delete(sell_fill)
+            raise HTTPException(status_code=422, detail="reopening a closed trade is not supported")
 
         trade.opened_at = buy_input.date
         trade.closed_at = sell_input.date if sell_input is not None else ""
