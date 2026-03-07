@@ -89,6 +89,16 @@ def main() -> int:
         has_trades = isinstance(paths, dict) and f"{prefix}/trades" in paths
     ok &= _check(status == 200 and has_trades, "openapi includes trades path", f"status={status}")
 
+    settings_status, settings_body, settings_headers = _request_json(f"{base}{prefix}/settings/me")
+    no_store = str(settings_headers.get("cache-control") or "").strip().lower() == "no-store"
+    ok &= _check(no_store, "settings/me returns no-store cache policy")
+    if args.expect_auth_required:
+        settings_auth_ok = settings_status in {401, 403}
+        ok &= _check(settings_auth_ok, "settings/me requires auth", f"status={settings_status}")
+    else:
+        settings_open_ok = settings_status == 200 and bool(str(settings_body.get("user_id") or "").strip())
+        ok &= _check(settings_open_ok, "settings/me available in auth-off mode", f"status={settings_status}")
+
     status, _, trades_headers = _request_json(f"{base}{prefix}/trades")
     has_rate_headers = (
         bool(str(trades_headers.get("x-ratelimit-limit") or "").strip())

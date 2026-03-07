@@ -197,7 +197,7 @@ cd backend
 ```
 
 このスクリプトは `health`, `health/ready`, `openapi`, `authガード` に加えて
-`X-Request-ID` とセキュリティヘッダーも検証する。
+`X-Request-ID` とセキュリティヘッダー、`settings/me` の `no-store` も検証する。
 `RATE_LIMIT_ENABLED=true` 環境では `--expect-rate-limit-headers` を付ける。
 
 ### 6.1 認証
