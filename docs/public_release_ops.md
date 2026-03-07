@@ -42,6 +42,12 @@ cd frontend
 npm run check:release-env -- --strict
 ```
 
+Frontend公開前チェック一括実行:
+```bash
+cd frontend
+npm run preflight:release
+```
+
 ## 2. Supabase Auth 設定
 
 ### 2.1 Site URL
