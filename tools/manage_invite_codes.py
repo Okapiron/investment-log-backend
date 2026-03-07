@@ -48,6 +48,7 @@ def main() -> int:
     target_group = revoke_parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument("--id", type=int, help="invite code row id")
     target_group.add_argument("--code", type=str, help="raw invite code")
+    revoke_parser.add_argument("--json", action="store_true", help="print revoke result as JSON")
 
     purge_parser = sub.add_parser("purge", help="delete old used/expired invite codes")
     purge_parser.add_argument(
@@ -58,6 +59,7 @@ def main() -> int:
     )
     purge_parser.add_argument("--days", type=int, default=30, help="delete rows older than days (default: 30)")
     purge_parser.add_argument("--dry-run", action="store_true", help="preview count without deleting")
+    purge_parser.add_argument("--json", action="store_true", help="print purge result as JSON")
 
     args = parser.parse_args()
     with SessionLocal() as db:
@@ -72,10 +74,36 @@ def main() -> int:
         if args.command == "revoke":
             row = revoke_invite_code(db, invite_id=args.id, code=args.code or "")
             if row is None:
-                print("invite code not found")
+                if bool(args.json):
+                    print(
+                        json.dumps(
+                            {
+                                "status": "not_found",
+                                "id": args.id,
+                                "code": args.code or "",
+                                "exit_code": 1,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                else:
+                    print("invite code not found")
                 return 1
             status = classify_invite_code(row)
-            print(f"revoked id={row.id} status={status}")
+            if bool(args.json):
+                print(
+                    json.dumps(
+                        {
+                            "status": "ok",
+                            "id": int(row.id),
+                            "invite_status": status,
+                            "exit_code": 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            else:
+                print(f"revoked id={row.id} status={status}")
             return 0
 
         if args.command == "purge":
@@ -85,10 +113,25 @@ def main() -> int:
                 older_than_days=args.days,
                 dry_run=bool(args.dry_run),
             )
-            if bool(args.dry_run):
-                print(f"purge_preview={deleted} mode={args.mode} days={args.days}")
+            if bool(args.json):
+                print(
+                    json.dumps(
+                        {
+                            "status": "ok",
+                            "mode": args.mode,
+                            "days": int(args.days),
+                            "dry_run": bool(args.dry_run),
+                            "deleted": int(deleted),
+                            "exit_code": 0,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
             else:
-                print(f"purged={deleted} mode={args.mode} days={args.days}")
+                if bool(args.dry_run):
+                    print(f"purge_preview={deleted} mode={args.mode} days={args.days}")
+                else:
+                    print(f"purged={deleted} mode={args.mode} days={args.days}")
             return 0
 
     return 0

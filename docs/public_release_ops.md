@@ -180,6 +180,12 @@ cd backend
 .venv/bin/python tools/manage_invite_codes.py revoke --id 12
 ```
 
+JSONで取得（運用スクリプト向け）:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py revoke --id 12 --json
+```
+
 ### 4.6 古いコードのクリーンアップ
 期限切れで30日より古いものを削除:
 ```bash
@@ -197,6 +203,12 @@ cd backend
 ```bash
 cd backend
 .venv/bin/python tools/manage_invite_codes.py purge --mode expired --days 30 --dry-run
+```
+
+JSONで取得（運用スクリプト向け）:
+```bash
+cd backend
+.venv/bin/python tools/manage_invite_codes.py purge --mode expired --days 30 --dry-run --json
 ```
 
 ## 5. リリース手順 (推奨順)
