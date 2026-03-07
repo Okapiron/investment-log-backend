@@ -117,8 +117,25 @@ def _ensure_trade_user_id_column() -> None:
             conn.execute(text("CREATE INDEX idx_trades_user_id ON trades (user_id)"))
 
 
+def _ensure_invite_code_columns() -> None:
+    # Backward-compatible schema patch for existing beta DBs.
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "invite_codes" not in inspector.get_table_names():
+            return
+
+        cols = {c.get("name") for c in inspector.get_columns("invite_codes")}
+        if "used_at" not in cols:
+            conn.execute(text("ALTER TABLE invite_codes ADD COLUMN used_at TIMESTAMP"))
+
+        indexes = {i.get("name") for i in inspector.get_indexes("invite_codes")}
+        if "idx_invite_codes_used_at" not in indexes:
+            conn.execute(text("CREATE INDEX idx_invite_codes_used_at ON invite_codes (used_at)"))
+
+
 @app.on_event("startup")
 def startup():
     _validate_runtime_config()
     Base.metadata.create_all(bind=engine)
     _ensure_trade_user_id_column()
+    _ensure_invite_code_columns()

@@ -40,6 +40,7 @@ def test_list_invite_codes_with_status_filters():
                     max_uses=1,
                     used_count=1,
                     used_by_user_id="user-1",
+                    used_at=now - timedelta(minutes=10),
                 ),
                 InviteCode(
                     code_hash=hash_invite_code("EXPIRED123"),
@@ -62,6 +63,7 @@ def test_list_invite_codes_with_status_filters():
         used_rows = list_invite_codes(db, status="used", limit=50, now=now)
         assert len(used_rows) == 1
         assert used_rows[0]["status"] == "used"
+        assert used_rows[0]["used_at"] is not None
 
         expired_rows = list_invite_codes(db, status="expired", limit=50, now=now)
         assert len(expired_rows) == 1

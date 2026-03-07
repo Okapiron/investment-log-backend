@@ -17,14 +17,15 @@ def _print_rows(rows: list[dict]) -> None:
         print("no invite codes")
         return
 
-    print("id | status  | hash_prefix | used | expires_at                 | used_by_user_id")
-    print("---+---------+-------------+------+----------------------------+----------------")
+    print("id | status  | hash_prefix | used | expires_at                 | used_at                    | used_by_user_id")
+    print("---+---------+-------------+------+----------------------------+----------------------------+----------------")
     for row in rows:
         used = f"{row['used_count']}/{row['max_uses']}"
         used_by = row["used_by_user_id"] or "-"
+        used_at = (row.get("used_at") or "-")[:26]
         print(
             f"{row['id']:>2} | {row['status']:<7} | {row['code_hash_prefix']:<11} | {used:<4} | "
-            f"{row['expires_at'][:26]:<26} | {used_by}"
+            f"{row['expires_at'][:26]:<26} | {used_at:<26} | {used_by}"
         )
 
 

@@ -5,6 +5,8 @@ import hmac
 import json
 import time
 
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.invites import hash_invite_code
 from app.db.models import InviteCode
@@ -209,6 +211,12 @@ def test_invite_code_is_one_time_and_bound_to_first_user(client):
 
     first = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token_a}"})
     assert first.status_code == 200
+    session_local = app.state.testing_session_local
+    with session_local() as db:
+        used_row = db.scalar(select(InviteCode).where(InviteCode.code_hash == hash_invite_code("ONETIME999")))
+        assert used_row is not None
+        assert used_row.used_by_user_id == "user-a"
+        assert used_row.used_at is not None
 
     second = client.get("/api/v1/trades", headers={"Authorization": f"Bearer {token_b}"})
     assert second.status_code == 403

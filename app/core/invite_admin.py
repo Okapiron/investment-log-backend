@@ -55,6 +55,7 @@ def list_invite_codes(
                 "used_count": int(row.used_count or 0),
                 "max_uses": int(row.max_uses or 1),
                 "used_by_user_id": row.used_by_user_id,
+                "used_at": _as_utc(row.used_at).isoformat() if row.used_at is not None else None,
                 "created_at": _as_utc(row.created_at).isoformat(),
             }
         )

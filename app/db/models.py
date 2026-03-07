@@ -151,3 +151,4 @@ class InviteCode(TimestampMixin, Base):
     max_uses: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     used_by_user_id: Mapped[Optional[str]] = mapped_column(String)
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

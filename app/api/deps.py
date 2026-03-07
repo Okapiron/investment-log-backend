@@ -100,6 +100,7 @@ def require_invited_auth(
 
     invite.used_count = int(invite.used_count) + 1
     invite.used_by_user_id = user_id
+    invite.used_at = now
     db.add(invite)
     db.commit()
     return claims
