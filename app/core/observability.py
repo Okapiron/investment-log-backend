@@ -7,6 +7,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = logging.getLogger("tradetrace.observability")
 
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def _apply_security_headers(response) -> None:
+    for key, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(key, value)
+
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -19,13 +30,16 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         except Exception:
             logger.exception("request_failed request_id=%s method=%s path=%s", request_id, method, path)
-            return JSONResponse(
+            response = JSONResponse(
                 {"detail": "internal server error", "request_id": request_id},
                 status_code=500,
                 headers={"X-Request-ID": request_id},
             )
+            _apply_security_headers(response)
+            return response
 
         response.headers["X-Request-ID"] = request_id
+        _apply_security_headers(response)
         if int(response.status_code) >= 500:
             logger.error(
                 "request_error request_id=%s method=%s path=%s status=%s",

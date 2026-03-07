@@ -153,6 +153,7 @@ cd backend
 - 無効コードでは API が 403 を返す
 - `GET /health/ready` が `{"status":"ok","db":"ok"}` を返す
 - レスポンスヘッダ `X-Request-ID` が付与される
+- レスポンスヘッダ `X-Content-Type-Options=nosniff`, `X-Frame-Options=DENY`, `Referrer-Policy=no-referrer` が付与される
 
 ### 6.2 データ分離
 - Aユーザーで作成したトレードが Bユーザーで見えない

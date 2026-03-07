@@ -73,11 +73,17 @@ def test_health_endpoints(client):
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
     assert str(res.headers.get("x-request-id") or "").strip() != ""
+    assert res.headers.get("x-content-type-options") == "nosniff"
+    assert res.headers.get("x-frame-options") == "DENY"
+    assert res.headers.get("referrer-policy") == "no-referrer"
 
     prefixed = client.get("/api/v1/health")
     assert prefixed.status_code == 200
     assert prefixed.json()["status"] == "ok"
     assert str(prefixed.headers.get("x-request-id") or "").strip() != ""
+    assert prefixed.headers.get("x-content-type-options") == "nosniff"
+    assert prefixed.headers.get("x-frame-options") == "DENY"
+    assert prefixed.headers.get("referrer-policy") == "no-referrer"
 
     ready = client.get("/health/ready")
     assert ready.status_code == 200
@@ -85,6 +91,9 @@ def test_health_endpoints(client):
     assert body["status"] == "ok"
     assert body["db"] == "ok"
     assert str(ready.headers.get("x-request-id") or "").strip() != ""
+    assert ready.headers.get("x-content-type-options") == "nosniff"
+    assert ready.headers.get("x-frame-options") == "DENY"
+    assert ready.headers.get("referrer-policy") == "no-referrer"
 
     prefixed_ready = client.get("/api/v1/health/ready")
     assert prefixed_ready.status_code == 200
@@ -92,6 +101,9 @@ def test_health_endpoints(client):
     assert prefixed_body["status"] == "ok"
     assert prefixed_body["db"] == "ok"
     assert str(prefixed_ready.headers.get("x-request-id") or "").strip() != ""
+    assert prefixed_ready.headers.get("x-content-type-options") == "nosniff"
+    assert prefixed_ready.headers.get("x-frame-options") == "DENY"
+    assert prefixed_ready.headers.get("referrer-policy") == "no-referrer"
 
 
 def test_trades_requires_auth_when_enabled(client):
