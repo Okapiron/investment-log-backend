@@ -380,6 +380,41 @@ def test_settings_runtime_requires_auth_when_auth_enabled(client):
     assert isinstance(payload.get("config_warnings"), list)
 
 
+def test_settings_runtime_release_status_warning_when_only_warnings_exist(client):
+    settings.auth_enabled = True
+    settings.supabase_jwt_secret = "test-secret"
+    settings.supabase_url = "https://demo.supabase.co"
+    settings.ops_alert_target = "slack:#ops"
+    settings.db_backup_strategy = "render-managed-daily"
+    settings.cors_allow_origins = "*"
+
+    token = _build_hs256_jwt({"sub": "runtime-warning", "exp": int(time.time()) + 3600}, "test-secret")
+    res = client.get("/api/v1/settings/runtime", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["release_status"] == "warning"
+    assert payload["config_errors"] == []
+    assert any("CORS_ALLOW_ORIGINS is wildcard" in w for w in payload["config_warnings"])
+
+
+def test_settings_runtime_release_status_error_when_required_config_missing(client):
+    settings.auth_enabled = True
+    settings.supabase_jwt_secret = "test-secret"
+    settings.supabase_url = ""
+    settings.ops_alert_target = ""
+    settings.db_backup_strategy = ""
+    settings.cors_allow_origins = "https://investment-log-frontend.vercel.app"
+
+    token = _build_hs256_jwt({"sub": "runtime-error", "exp": int(time.time()) + 3600}, "test-secret")
+    res = client.get("/api/v1/settings/runtime", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    payload = res.json()
+    assert payload["release_status"] == "error"
+    assert "SUPABASE_URL is required when AUTH_ENABLED=true" in payload["config_errors"]
+    assert "OPS_ALERT_TARGET is required when AUTH_ENABLED=true" in payload["config_errors"]
+    assert "DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true" in payload["config_errors"]
+
+
 def test_account_asset_snapshot_crud_and_dashboard(client):
     account = client.post(
         "/api/v1/accounts",
