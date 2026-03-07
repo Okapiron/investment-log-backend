@@ -8,7 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_session, require_invited_auth
@@ -59,6 +59,28 @@ def _try_delete_supabase_auth_user(user_id: str) -> tuple[bool, Optional[str]]:
         return False, f"Authユーザー削除に失敗しました（{detail}）"
     except Exception as e:
         return False, f"Authユーザー削除に失敗しました（{e}）"
+
+
+@router.get("/runtime")
+def get_runtime_status(db: Session = Depends(get_session), claims: dict = Depends(require_invited_auth)):
+    _scoped_user_id(claims)
+    db_status = "ok"
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db_status = "ng"
+
+    status = "ok" if db_status == "ok" else "ng"
+    return JSONResponse(
+        {
+            "status": status,
+            "db": db_status,
+            "auth_enabled": bool(settings.auth_enabled),
+            "invite_code_required": bool(settings.invite_code_required),
+            "rate_limit_enabled": bool(settings.rate_limit_enabled),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/me")

@@ -41,10 +41,26 @@ def _request_json(url: str) -> tuple[int, dict, dict]:
         return int(e.code), payload, headers
 
 
-def _check(condition: bool, label: str, detail: str = "") -> bool:
+def _check(
+    condition: bool,
+    label: str,
+    detail: str = "",
+    checks: list[dict] | None = None,
+    *,
+    verbose: bool = True,
+) -> bool:
     status = "PASS" if condition else "FAIL"
     suffix = f" ({detail})" if detail else ""
-    print(f"[{status}] {label}{suffix}")
+    if verbose:
+        print(f"[{status}] {label}{suffix}")
+    if checks is not None:
+        checks.append(
+            {
+                "name": label,
+                "ok": bool(condition),
+                "detail": detail,
+            }
+        )
     return condition
 
 
@@ -64,40 +80,109 @@ def main() -> int:
         default=False,
         help="expect X-RateLimit-* headers on /trades response (default: false)",
     )
+    parser.add_argument("--json", action="store_true", help="print structured result as JSON")
     args = parser.parse_args()
 
     base = _normalize_base(args.base)
     prefix = _normalize_prefix(args.api_prefix)
+    verbose = not bool(args.json)
+    checks: list[dict] = []
 
     ok = True
 
     status, payload, headers = _request_json(f"{base}/health")
-    ok &= _check(status == 200 and payload.get("status") == "ok", "health", f"status={status}")
-    ok &= _check(bool(str(headers.get("x-request-id") or "").strip()), "x-request-id header on /health")
-    ok &= _check(headers.get("x-content-type-options") == "nosniff", "x-content-type-options header")
-    ok &= _check(headers.get("x-frame-options") == "DENY", "x-frame-options header")
-    ok &= _check(headers.get("referrer-policy") == "no-referrer", "referrer-policy header")
+    ok &= _check(status == 200 and payload.get("status") == "ok", "health", f"status={status}", checks, verbose=verbose)
+    ok &= _check(
+        bool(str(headers.get("x-request-id") or "").strip()),
+        "x-request-id header on /health",
+        checks=checks,
+        verbose=verbose,
+    )
+    ok &= _check(
+        headers.get("x-content-type-options") == "nosniff",
+        "x-content-type-options header",
+        checks=checks,
+        verbose=verbose,
+    )
+    ok &= _check(
+        headers.get("x-frame-options") == "DENY",
+        "x-frame-options header",
+        checks=checks,
+        verbose=verbose,
+    )
+    ok &= _check(
+        headers.get("referrer-policy") == "no-referrer",
+        "referrer-policy header",
+        checks=checks,
+        verbose=verbose,
+    )
 
     status, payload, _ = _request_json(f"{base}{prefix}/health/ready")
     db_ok = payload.get("db") == "ok"
-    ok &= _check(status == 200 and payload.get("status") == "ok" and db_ok, "health/ready", f"status={status}")
+    ok &= _check(
+        status == 200 and payload.get("status") == "ok" and db_ok,
+        "health/ready",
+        f"status={status}",
+        checks,
+        verbose=verbose,
+    )
 
     status, payload, _ = _request_json(f"{base}/openapi.json")
     has_trades = False
     if status == 200:
         paths = payload.get("paths")
         has_trades = isinstance(paths, dict) and f"{prefix}/trades" in paths
-    ok &= _check(status == 200 and has_trades, "openapi includes trades path", f"status={status}")
+    ok &= _check(
+        status == 200 and has_trades,
+        "openapi includes trades path",
+        f"status={status}",
+        checks,
+        verbose=verbose,
+    )
 
     settings_status, settings_body, settings_headers = _request_json(f"{base}{prefix}/settings/me")
     no_store = str(settings_headers.get("cache-control") or "").strip().lower() == "no-store"
-    ok &= _check(no_store, "settings/me returns no-store cache policy")
+    ok &= _check(no_store, "settings/me returns no-store cache policy", checks=checks, verbose=verbose)
     if args.expect_auth_required:
         settings_auth_ok = settings_status in {401, 403}
-        ok &= _check(settings_auth_ok, "settings/me requires auth", f"status={settings_status}")
+        ok &= _check(
+            settings_auth_ok,
+            "settings/me requires auth",
+            f"status={settings_status}",
+            checks,
+            verbose=verbose,
+        )
     else:
         settings_open_ok = settings_status == 200 and bool(str(settings_body.get("user_id") or "").strip())
-        ok &= _check(settings_open_ok, "settings/me available in auth-off mode", f"status={settings_status}")
+        ok &= _check(
+            settings_open_ok,
+            "settings/me available in auth-off mode",
+            f"status={settings_status}",
+            checks,
+            verbose=verbose,
+        )
+
+    runtime_status, runtime_body, runtime_headers = _request_json(f"{base}{prefix}/settings/runtime")
+    runtime_no_store = str(runtime_headers.get("cache-control") or "").strip().lower() == "no-store"
+    ok &= _check(runtime_no_store, "settings/runtime returns no-store cache policy", checks=checks, verbose=verbose)
+    if args.expect_auth_required:
+        runtime_auth_ok = runtime_status in {401, 403}
+        ok &= _check(
+            runtime_auth_ok,
+            "settings/runtime requires auth",
+            f"status={runtime_status}",
+            checks,
+            verbose=verbose,
+        )
+    else:
+        runtime_ok = runtime_status == 200 and runtime_body.get("status") in {"ok", "ng"}
+        ok &= _check(
+            runtime_ok,
+            "settings/runtime available in auth-off mode",
+            f"status={runtime_status}",
+            checks,
+            verbose=verbose,
+        )
 
     status, _, trades_headers = _request_json(f"{base}{prefix}/trades")
     has_rate_headers = (
@@ -106,18 +191,41 @@ def main() -> int:
         and bool(str(trades_headers.get("x-ratelimit-reset") or "").strip())
     )
     if args.expect_rate_limit_headers:
-        ok &= _check(has_rate_headers, "rate-limit headers present on trades response")
+        ok &= _check(has_rate_headers, "rate-limit headers present on trades response", checks=checks, verbose=verbose)
     else:
-        _check(True, "rate-limit header check skipped (not expected)")
+        _check(
+            True,
+            "rate-limit header check skipped (not expected)",
+            checks=checks,
+            verbose=verbose,
+        )
     if args.expect_auth_required:
         auth_ok = status in {401, 403}
-        ok &= _check(auth_ok, "trades requires auth", f"status={status}")
+        ok &= _check(auth_ok, "trades requires auth", f"status={status}", checks, verbose=verbose)
     else:
         auth_ok = status == 200
-        ok &= _check(auth_ok, "trades available without auth", f"status={status}")
+        ok &= _check(auth_ok, "trades available without auth", f"status={status}", checks, verbose=verbose)
+
+    exit_code = 0 if ok else 1
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok" if ok else "failed",
+                    "base": base,
+                    "api_prefix": prefix,
+                    "expect_auth_required": bool(args.expect_auth_required),
+                    "expect_rate_limit_headers": bool(args.expect_rate_limit_headers),
+                    "checks": checks,
+                    "exit_code": exit_code,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return exit_code
 
     print("SMOKE CHECK: OK" if ok else "SMOKE CHECK: FAILED")
-    return 0 if ok else 1
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -91,6 +91,12 @@ cd backend
 .venv/bin/python tools/check_release_config.py --strict
 ```
 
+CI/運用スクリプト向けに JSON 形式で取得:
+```bash
+cd backend
+.venv/bin/python tools/check_release_config.py --strict --json
+```
+
 `AUTH_ENABLED=true` で `RATE_LIMIT_ENABLED=false` の場合は warning が出る。
 `INVITE_CODE_REQUIRED=true` で有効な招待コードが0件でも warning が出る。
 `AUTH_ENABLED=true` で SQLite 使用時や、`http://` の非localhost CORS origin でも warning が出る。
@@ -100,6 +106,12 @@ cd backend
 ```bash
 cd backend
 .venv/bin/python tools/preflight_release.py --base https://<render-backend-host>
+```
+
+CI/運用スクリプト向けに JSON 形式で取得:
+```bash
+cd backend
+.venv/bin/python tools/preflight_release.py --base https://<render-backend-host> --json
 ```
 
 ## 4. 招待コード運用
@@ -195,6 +207,12 @@ cd backend
 ```bash
 cd backend
 .venv/bin/python tools/smoke_release.py --base https://<render-backend-host>
+```
+
+CI/運用スクリプト向けに JSON 形式で取得:
+```bash
+cd backend
+.venv/bin/python tools/smoke_release.py --base https://<render-backend-host> --json
 ```
 
 このスクリプトは `health`, `health/ready`, `openapi`, `authガード` に加えて
