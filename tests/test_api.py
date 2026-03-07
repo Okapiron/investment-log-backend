@@ -498,6 +498,7 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
         json={
             "market": "JP",
             "symbol": "6501",
+            "rating": 4,
             "fills": [
                 {"side": "buy", "date": "2026-04-01", "price": 1000, "qty": 1, "fee": 0},
                 {"side": "sell", "date": "2026-04-02", "price": 1100, "qty": 1, "fee": 0},
@@ -520,6 +521,7 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
     assert reopen_body["is_open"] is True
     assert reopen_body["closed_at"] is None
     assert reopen_body["profit_jpy"] is None
+    assert reopen_body["rating"] is None
 
     mixed_review = client.patch(
         f"/api/v1/trades/{closed_id}",

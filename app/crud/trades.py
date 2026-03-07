@@ -206,6 +206,10 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
         trade.opened_at = buy_input.date
         trade.closed_at = sell_input.date if sell_input is not None else ""
 
+    # Keep open positions unrated to avoid status/filter noise.
+    if not str(trade.closed_at or "").strip():
+        trade.rating = None
+
     # If review requirements are no longer satisfied, keep trade as pending review.
     if review_completion_missing_items(trade):
         trade.review_done = False
