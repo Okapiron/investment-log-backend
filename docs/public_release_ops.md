@@ -306,3 +306,7 @@ cd backend
 ## 10. 障害時一次対応
 - 詳細手順は以下を参照:
   - `docs/incident_first_response.md`
+
+## 11. 公開前E2E確認
+- 実運用フローの最終確認は以下を参照:
+  - `docs/release_e2e_checklist.md`
