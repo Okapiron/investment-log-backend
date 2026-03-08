@@ -1,4 +1,4 @@
-# TradeTrace 公開運用 Runbook (v1)
+# TradeTrace 公開運用 Runbook (v2)
 
 このドキュメントは、公開前後の運用手順を固定するための実務手順書です。
 
@@ -17,7 +17,7 @@
   - Supabase Project Settings の JWT secret
 - `SUPABASE_SERVICE_ROLE_KEY`:
   - Supabase service role key
-- `INVITE_CODE_REQUIRED=true`
+- `INVITE_CODE_REQUIRED=false` (公開モード既定)
 - `CORS_ALLOW_ORIGINS`:
   - 例: `https://investment-log-frontend.vercel.app,http://localhost:5173`
 - `RATE_LIMIT_ENABLED=true`
@@ -42,7 +42,7 @@
 - `VITE_SUPABASE_URL`:
   - 例: `https://<project-ref>.supabase.co`
 - `VITE_SUPABASE_ANON_KEY`:
-  - Supabase anon key
+  - Supabase publishable key (`sb_publishable_...`)
 
 公開前に Frontend env を検証:
 ```bash
@@ -80,8 +80,9 @@ node tools/preflight_release.mjs --json
   - `http://localhost:5173/auth/callback`
 
 ### 2.3 メール認証
-- Magic Link を有効化
-- テンプレートに不審な文言がないか確認
+- Email provider を有効化
+- `Allow new users to sign up` を有効化
+- `Confirm email` は公開初期は OFF 推奨（運用安定後に ON を検討）
 
 ## 3. DBマイグレーション
 
@@ -101,7 +102,7 @@ cd backend
 ```
 
 `AUTH_ENABLED=true` の場合は、上記でDBスキーマも同時に検証する
-（`trades.user_id`, `invite_codes`, `invite_codes.used_at`）。
+（`trades.user_id` など）。
 
 本番反映直前は strict モード推奨:
 ```bash
@@ -116,7 +117,7 @@ cd backend
 ```
 
 `AUTH_ENABLED=true` で `RATE_LIMIT_ENABLED=false` の場合は warning が出る。
-`INVITE_CODE_REQUIRED=true` で有効な招待コードが0件でも warning が出る。
+`INVITE_CODE_REQUIRED=true` のときだけ、有効な招待コード0件で warning が出る。
 `AUTH_ENABLED=true` で SQLite 使用時や、`http://` の非localhost CORS origin でも warning が出る。
 `SUPABASE_URL` が `https://*.supabase.co` 形式でない場合も warning が出る。
 `AUTH_ENABLED=true` で `APP_VERSION` が `dev-local`（未設定相当）の場合も warning が出る。
@@ -133,7 +134,9 @@ cd backend
 .venv/bin/python tools/preflight_release.py --base https://<render-backend-host> --json
 ```
 
-## 4. 招待コード運用
+## 4. 招待コード運用（任意）
+
+`INVITE_CODE_REQUIRED=true` を有効化する場合のみ実施する。
 
 ### 4.1 新規発行
 ```bash
@@ -223,14 +226,14 @@ cd backend
 2. frontend の env を更新
 3. `alembic upgrade head` を実行
 4. `tools/check_release_config.py` を実行
-5. 招待コードを1件発行
-6. テストユーザーで以下を確認
+5. テストユーザーで以下を確認
    - ログイン画面表示
-   - 招待コードありでログイン成功
+   - 新規登録（メール+パスワード）
+   - ログイン（メール+パスワード）
    - `Trades` 作成/編集/削除
    - `Settings` でエクスポート可能
    - `GET /health/ready` が `200` を返す
-7. 招待ユーザーへ URL とコードを配布
+6. 公開URLを配布
 
 ## 6. スモークチェック
 
@@ -252,7 +255,7 @@ cd backend
 
 ### 6.1 認証
 - 未ログインで `/trades` へ行くと `/auth` へ遷移する
-- 無効コードでは API が 403 を返す
+- 誤ったパスワードではログイン失敗となる
 - `GET /health/ready` が `{"status":"ok","db":"ok"}` を返す
 - レスポンスヘッダ `X-Request-ID` が付与される
 - レスポンスヘッダ `X-Content-Type-Options=nosniff`, `X-Frame-Options=DENY`, `Referrer-Policy=no-referrer` が付与される
@@ -262,10 +265,10 @@ cd backend
 
 ### 6.3 Settings
 - `Account` 情報が取得できる
-- `Runtime` に `Release Status (OK/WARNING/ERROR)`、`Server Time (UTC)`、Backend/Frontend Version、`Invite Readiness`、release設定の warning/error が表示される
+- `Runtime` に `Release Status (OK/WARNING/ERROR)`、`Server Time (UTC)`、Backend/Frontend Version、release設定の warning/error が表示される
 - JSON/CSV エクスポートがダウンロードできる
 - データ削除で対象ユーザーの trade が削除される
-- データ削除時、使用済み招待コードは「消費済みのまま」ユーザー紐付けのみ匿名化される
+- （Inviteモード時）データ削除時、使用済み招待コードは「消費済みのまま」ユーザー紐付けのみ匿名化される
 - データ削除APIは `confirm=true` と `confirm_text=DELETE` の両方を要求する
 - `settings` 系レスポンス（成功/失敗とも）は `Cache-Control: no-store` を返す
 

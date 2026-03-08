@@ -1,7 +1,7 @@
-# TradeTrace 招待制公開 E2Eチェックリスト (v1)
+# TradeTrace 公開 E2Eチェックリスト (v2)
 
 このチェックリストは、公開前に「実利用の一連フロー」が壊れていないことを確認するための手順です。
-対象は Phase 1（招待制ベータ公開）です。
+対象は Phase 1（メール+パスワード認証 / Invite OFF）です。
 
 ## 0. 使い方
 - 実施日、実施者、対象環境（Production / Staging）を最初に記録する
@@ -13,23 +13,22 @@
   - `cd backend && .venv/bin/python tools/preflight_release.py --base https://<render-backend-host>`
 - [ ] Frontend の release preflight が通る
   - `cd frontend && npm run preflight:release`
-- [ ] 有効な招待コードを1件以上発行済み
-  - `cd backend && .venv/bin/python tools/create_invite_code.py --days 7 --length 10`
+- [ ] Runtime で `Auth: ON / Invite: OFF` を確認できる
 
-## 2. ケースA: 新規招待ユーザーの導線
+## 2. ケースA: 新規ユーザー登録とログイン導線
 - [ ] `https://investment-log-frontend.vercel.app/auth` が表示される
-- [ ] 招待コード未入力で送信した場合、登録できずエラーになる
-- [ ] 無効な招待コードで送信した場合、登録できずエラーになる
-- [ ] 有効な招待コードで Magic Link を送信できる
-- [ ] メールリンクから `auth/callback` を経由して `/trades` へ遷移できる
+- [ ] 新規登録（メール+パスワード）で登録できる
+- [ ] 登録済みメールで新規登録した場合、`User already registered` になる
+- [ ] ログイン（メール+パスワード）で `/trades` に遷移できる
 - [ ] `/trades/new` から新規トレードを保存できる
 - [ ] `/trades/:id` で編集・保存できる
 - [ ] レビュー完了条件を満たしたときのみ「レビュー済」にできる
 - [ ] 条件を崩した編集をすると「未レビュー」へ戻る
 
-## 3. ケースB: 招待コード一回利用制限
-- [ ] すでに使った招待コードで別アカウント登録できない（拒否される）
-- [ ] 同じユーザーの再ログインは問題なくできる
+## 3. ケースB: 認証エラー導線
+- [ ] 誤ったパスワードでログインした場合、`Invalid login credentials` になる
+- [ ] 未ログインで `/trades` にアクセスした場合、`/auth` へ遷移する
+- [ ] 既存ユーザーの再ログインが問題なくできる
 
 ## 4. ケースC: ユーザー分離
 - [ ] ユーザーAで作成したトレードがユーザーBには見えない
@@ -38,7 +37,7 @@
 
 ## 5. ケースD: Settings 機能
 - [ ] `Settings > Account` で user_id / email が取得できる
-- [ ] `Settings > Runtime` が表示される（Version / Release Status / Invite Readiness）
+- [ ] `Settings > Runtime` が表示される（Version / Release Status）
 - [ ] JSONエクスポートをダウンロードできる
 - [ ] CSVエクスポートをダウンロードできる
 - [ ] `DELETE` 入力なしではデータ削除できない
