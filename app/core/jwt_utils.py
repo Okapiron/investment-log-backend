@@ -15,6 +15,21 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
 
+def get_token_algorithm(token: str) -> str:
+    parts = str(token or "").split(".")
+    if len(parts) != 3:
+        raise ValueError("invalid token format")
+    header_b64 = parts[0]
+    try:
+        header = json.loads(_b64url_decode(header_b64).decode("utf-8"))
+    except Exception as e:  # pragma: no cover - parse errors are covered by ValueError path
+        raise ValueError("invalid token payload") from e
+    alg = str(header.get("alg") or "").strip()
+    if not alg:
+        raise ValueError("invalid token algorithm")
+    return alg
+
+
 def decode_and_verify_hs256(token: str, secret: str) -> dict[str, Any]:
     parts = str(token or "").split(".")
     if len(parts) != 3:

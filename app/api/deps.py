@@ -1,4 +1,7 @@
 from datetime import datetime, timezone
+import json
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -7,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.invites import hash_invite_code, normalize_invite_code
-from app.core.jwt_utils import decode_and_verify_hs256
+from app.core.jwt_utils import decode_and_verify_hs256, get_token_algorithm
 from app.db.models import InviteCode
 from app.db.session import get_db
 
@@ -19,19 +22,85 @@ def get_session(db: Session = Depends(get_db)) -> Session:
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+def _verify_with_supabase_auth_user(token: str) -> dict:
+    base_url = str(settings.supabase_url or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("SUPABASE_URL is not configured")
+
+    service_key = str(settings.supabase_service_role_key or "").strip()
+    if not service_key:
+        raise ValueError("SUPABASE_SERVICE_ROLE_KEY is not configured")
+
+    req = urlrequest.Request(
+        url=f"{base_url}/auth/v1/user",
+        method="GET",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "apikey": service_key,
+        },
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=8) as res:
+            body = res.read().decode("utf-8", errors="ignore")
+            user = json.loads(body) if body else {}
+    except urlerror.HTTPError as e:
+        detail = "token verification failed"
+        try:
+            raw = e.read().decode("utf-8", errors="ignore")
+            parsed = json.loads(raw) if raw else {}
+            detail = str(parsed.get("msg") or parsed.get("message") or detail)
+        except Exception:
+            pass
+        if e.code in (401, 403):
+            raise ValueError(detail)
+        raise ValueError(f"auth upstream error ({e.code})")
+    except Exception:
+        raise ValueError("auth upstream connection failed")
+
+    sub = str((user or {}).get("id") or "").strip()
+    if not sub:
+        raise ValueError("sub is missing")
+
+    user_meta = user.get("user_metadata") if isinstance(user, dict) else {}
+    app_meta = user.get("app_metadata") if isinstance(user, dict) else {}
+    claims = {
+        "sub": sub,
+        "email": user.get("email") if isinstance(user, dict) else None,
+        "user_metadata": user_meta if isinstance(user_meta, dict) else {},
+        "app_metadata": app_meta if isinstance(app_meta, dict) else {},
+    }
+    invite_code = str(claims["user_metadata"].get("invite_code") or "").strip()
+    if invite_code:
+        claims["invite_code"] = invite_code
+    return claims
+
+
 def require_auth(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> dict:
     if not settings.auth_enabled:
         return {"sub": "dev-local-user"}
 
-    secret = str(settings.supabase_jwt_secret or "").strip()
-    if not secret:
-        raise HTTPException(status_code=503, detail="auth is enabled but SUPABASE_JWT_SECRET is not configured")
-
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=401, detail="authentication required")
 
+    token = str(credentials.credentials or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="authentication required")
+
     try:
-        claims = decode_and_verify_hs256(credentials.credentials, secret)
+        alg = get_token_algorithm(token)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"invalid auth token: {e}")
+
+    try:
+        if alg == "HS256":
+            secret = str(settings.supabase_jwt_secret or "").strip()
+            if not secret:
+                raise HTTPException(status_code=503, detail="auth is enabled but SUPABASE_JWT_SECRET is not configured")
+            claims = decode_and_verify_hs256(token, secret)
+        else:
+            claims = _verify_with_supabase_auth_user(token)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"invalid auth token: {e}")
 
