@@ -310,3 +310,4 @@ cd backend
 ## 11. 公開前E2E確認
 - 実運用フローの最終確認は以下を参照:
   - `docs/release_e2e_checklist.md`
+- 実施結果は `docs/release_e2e_runs/YYYY-MM-DD.md` に保存する
