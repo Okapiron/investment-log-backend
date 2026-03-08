@@ -42,7 +42,7 @@ def evaluate_runtime_config_issues(settings) -> tuple[list[str], list[str]]:
         if _is_blank(settings.supabase_jwt_secret):
             errors.append("SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true")
         if _is_blank(settings.ops_alert_target):
-            errors.append("OPS_ALERT_TARGET is required when AUTH_ENABLED=true")
+            warnings.append("OPS_ALERT_TARGET is empty in auth-enabled mode")
         if _is_blank(settings.db_backup_strategy):
             errors.append("DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true")
         if settings.invite_code_required and _is_blank(settings.supabase_service_role_key):

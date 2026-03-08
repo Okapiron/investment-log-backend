@@ -57,7 +57,7 @@ def test_runtime_config_requires_release_fields_when_auth_enabled():
         errors, warnings = get_runtime_config_issues()
         assert "SUPABASE_URL is required when AUTH_ENABLED=true" in errors
         assert "SUPABASE_JWT_SECRET is required when AUTH_ENABLED=true" in errors
-        assert "OPS_ALERT_TARGET is required when AUTH_ENABLED=true" in errors
+        assert "OPS_ALERT_TARGET is empty in auth-enabled mode" in warnings
         assert "DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true" in errors
         assert "CORS_ALLOW_ORIGINS is wildcard in auth-enabled mode" in warnings
     finally:
@@ -417,7 +417,7 @@ def test_settings_runtime_release_status_error_when_required_config_missing(clie
     payload = res.json()
     assert payload["release_status"] == "error"
     assert "SUPABASE_URL is required when AUTH_ENABLED=true" in payload["config_errors"]
-    assert "OPS_ALERT_TARGET is required when AUTH_ENABLED=true" in payload["config_errors"]
+    assert "OPS_ALERT_TARGET is empty in auth-enabled mode" in payload["config_warnings"]
     assert "DB_BACKUP_STRATEGY is required when AUTH_ENABLED=true" in payload["config_errors"]
 
 
