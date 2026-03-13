@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import ASSET_TYPES
@@ -127,7 +128,7 @@ class Fill(Base):
     trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id", ondelete="CASCADE"), nullable=False)
     side: Mapped[str] = mapped_column(String, nullable=False)
     date: Mapped[str] = mapped_column(String, nullable=False)
-    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
     fee: Mapped[Optional[int]] = mapped_column(Integer)
 

@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, Tuple
 
 from fastapi import HTTPException
@@ -25,6 +26,36 @@ def _validate_market(market: str) -> None:
         raise HTTPException(status_code=422, detail="market must be JP or US")
 
 
+def _price_decimal_places(value: Decimal) -> int:
+    exponent = value.as_tuple().exponent
+    if exponent >= 0:
+        return 0
+    return -exponent
+
+
+def _normalize_price_for_market(market: str, price: Decimal, side: str) -> Decimal:
+    if price <= 0:
+        raise HTTPException(status_code=422, detail=f"{side}.price must be greater than 0")
+
+    if market == "JP":
+        if _price_decimal_places(price) > 0:
+            raise HTTPException(status_code=422, detail=f"{side}.price must be an integer for JP market")
+        return price.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+    if market == "US":
+        if _price_decimal_places(price) > 2:
+            raise HTTPException(status_code=422, detail=f"{side}.price must allow up to 2 decimal places for US market")
+        return price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    raise HTTPException(status_code=422, detail="market must be JP or US")
+
+
+def _normalize_fill_prices_for_market(market: str, buy: FillInput, sell: Optional[FillInput]) -> None:
+    buy.price = _normalize_price_for_market(market, buy.price, "buy")
+    if sell is not None:
+        sell.price = _normalize_price_for_market(market, sell.price, "sell")
+
+
 def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optional[FillInput]]:
     if len(fills) < 1 or len(fills) > 2:
         raise HTTPException(status_code=422, detail="fills must contain buy or buy+sell")
@@ -40,12 +71,7 @@ def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optio
 
     if buy is None:
         raise HTTPException(status_code=422, detail="fills must include buy")
-    if buy.price <= 0:
-        raise HTTPException(status_code=422, detail="buy.price must be greater than 0")
-
     if sell is not None:
-        if sell.price <= 0:
-            raise HTTPException(status_code=422, detail="sell.price must be greater than 0")
         if buy.qty != sell.qty:
             raise HTTPException(status_code=422, detail="buy.qty and sell.qty must match")
 
@@ -57,13 +83,14 @@ def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optio
     return buy, sell
 
 
-def compute_profit_holding(buy: Fill, sell: Fill) -> Tuple[int, int]:
-    buy_fee = buy.fee or 0
-    sell_fee = sell.fee or 0
-    qty = buy.qty
-    profit = (sell.price - buy.price) * qty - (buy_fee + sell_fee)
+def compute_profit_holding(buy: Fill, sell: Fill) -> Tuple[float, int]:
+    buy_fee = Decimal(str(buy.fee or 0))
+    sell_fee = Decimal(str(sell.fee or 0))
+    qty = Decimal(str(buy.qty))
+    profit = (Decimal(str(sell.price)) - Decimal(str(buy.price))) * qty - (buy_fee + sell_fee)
+    profit = profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     holding_days = (_parse_iso_date(sell.date) - _parse_iso_date(buy.date)).days
-    return profit, holding_days
+    return float(profit), holding_days
 
 
 def _has_non_empty_text(value: Optional[str]) -> bool:
@@ -96,6 +123,7 @@ def review_completion_missing_items(trade: Trade) -> list[str]:
 def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional[str] = None) -> Trade:
     _validate_market(payload.market)
     buy_input, sell_input = _extract_buy_sell_optional(payload.fills)
+    _normalize_fill_prices_for_market(payload.market, buy_input, sell_input)
 
     trade = Trade(
         user_id=(str(user_id).strip() or None) if user_id is not None else None,
@@ -162,6 +190,8 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
     for key, value in data.items():
         setattr(trade, key, value)
 
+    effective_market = data.get("market") or trade.market
+
     if fills_payload is not None or has_trade_fill_fields:
         normalized = None
         if fills_payload is not None:
@@ -179,6 +209,7 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
                 normalized.append(FillInput(side="sell", date=sell_date, price=sell_price, qty=sell_qty, fee=0))
 
         buy_input, sell_input = _extract_buy_sell_optional(normalized)
+        _normalize_fill_prices_for_market(effective_market, buy_input, sell_input)
 
         existing = {fill.side: fill for fill in trade.fills}
         buy_fill = existing.get("buy")
@@ -206,6 +237,15 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
 
         trade.opened_at = buy_input.date
         trade.closed_at = sell_input.date if sell_input is not None else ""
+    elif "market" in data:
+        existing = {fill.side: fill for fill in trade.fills}
+        buy_fill = existing.get("buy")
+        sell_fill = existing.get("sell")
+        if buy_fill is None:
+            raise HTTPException(status_code=422, detail="trade must include buy fill")
+        _normalize_price_for_market(effective_market, Decimal(str(buy_fill.price)), "buy")
+        if sell_fill is not None:
+            _normalize_price_for_market(effective_market, Decimal(str(sell_fill.price)), "sell")
 
     # Keep open positions unrated to avoid status/filter noise.
     if not str(trade.closed_at or "").strip():

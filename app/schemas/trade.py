@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field
 class FillInput(BaseModel):
     side: str
     date: str = Field(min_length=10, max_length=10)
-    price: int = Field(ge=0)
+    price: Decimal = Field(ge=0)
     qty: int = Field(ge=1)
     fee: Optional[int] = Field(default=0, ge=0)
 
@@ -16,7 +17,7 @@ class FillRead(BaseModel):
     trade_id: int
     side: str
     date: str
-    price: int
+    price: float
     qty: int
     fee: int
 
@@ -49,10 +50,10 @@ class TradeUpdate(BaseModel):
     review_done: Optional[bool] = None
     reviewed_at: Optional[str] = None
     buy_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
-    buy_price: Optional[int] = Field(default=None, ge=0)
+    buy_price: Optional[Decimal] = Field(default=None, ge=0)
     buy_qty: Optional[int] = Field(default=None, ge=1)
     sell_date: Optional[str] = Field(default=None, min_length=10, max_length=10)
-    sell_price: Optional[int] = Field(default=None, ge=0)
+    sell_price: Optional[Decimal] = Field(default=None, ge=0)
     sell_qty: Optional[int] = Field(default=None, ge=1)
     fills: Optional[list[FillInput]] = None
 
@@ -75,8 +76,8 @@ class TradeRead(BaseModel):
     created_at: str
     updated_at: str
     fills: list[FillRead]
-    profit_jpy: Optional[int]
-    profit_usd: Optional[int]
+    profit_jpy: Optional[float]
+    profit_usd: Optional[float]
     profit_currency: str
     holding_days: Optional[int]
     is_open: bool
