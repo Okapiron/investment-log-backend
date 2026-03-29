@@ -135,6 +135,21 @@ class Fill(Base):
     trade: Mapped[Trade] = relationship(back_populates="fills")
 
 
+class TradeImportRecord(Base):
+    __tablename__ = "trade_import_records"
+    __table_args__ = (
+        UniqueConstraint("source_signature", name="uq_trade_import_records_source_signature"),
+        Index("idx_trade_import_records_trade_id", "trade_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    broker: Mapped[str] = mapped_column(String, nullable=False)
+    source_name: Mapped[Optional[str]] = mapped_column(String)
+    source_signature: Mapped[str] = mapped_column(String, nullable=False)
+    trade_id: Mapped[Optional[int]] = mapped_column(ForeignKey("trades.id", ondelete="SET NULL"))
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+
+
 class InviteCode(TimestampMixin, Base):
     __tablename__ = "invite_codes"
     __table_args__ = (

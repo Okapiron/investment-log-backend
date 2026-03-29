@@ -36,7 +36,7 @@ class AnalysisDataSufficiencyRead(BaseModel):
     enough_data: bool
     minimum_closed_trade_count: int = Field(ge=1)
     closed_trade_count: int = Field(ge=0)
-    llm_status: Literal["generated", "insufficient_data", "unconfigured", "fallback", "error", "mock"]
+    llm_status: Literal["generated", "insufficient_data", "unconfigured", "fallback", "error", "mock", "rule_based"]
     message: str
 
 

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 
-from app.api import accounts, analysis, assets, dashboard, monthly, prices, settings as settings_api, snapshots, trades
+from app.api import accounts, analysis, assets, dashboard, imports, monthly, prices, settings as settings_api, snapshots, trades
 from app.core.config import settings
 from app.core.observability import RequestIdMiddleware
 from app.core.private_access import ensure_private_api_access
@@ -128,6 +128,7 @@ app.include_router(snapshots.router, prefix=settings.api_prefix)
 app.include_router(dashboard.router, prefix=settings.api_prefix)
 app.include_router(monthly.router, prefix=settings.api_prefix)
 app.include_router(trades.router, prefix=settings.api_prefix)
+app.include_router(imports.router, prefix=settings.api_prefix)
 app.include_router(analysis.router, prefix=settings.api_prefix)
 app.include_router(prices.router, prefix=settings.api_prefix)
 app.include_router(settings_api.router, prefix=settings.api_prefix)

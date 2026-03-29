@@ -40,6 +40,7 @@ def test_openapi(client):
     assert "/api/v1/monthly" in data["paths"]
     assert "/api/v1/snapshots/copy-latest" in data["paths"]
     assert "/api/v1/trades" in data["paths"]
+    assert "/api/v1/imports/rakuten-jp/preview" in data["paths"]
     assert "/api/v1/analysis/summary" in data["paths"]
 
 
@@ -169,15 +170,15 @@ def test_analysis_summary_insufficient_data_returns_stats_only(client):
     res = client.get("/api/v1/analysis/summary")
     assert res.status_code == 200
     body = res.json()
-    assert body["summary"] is None
-    assert body["win_patterns"] == []
-    assert body["loss_patterns"] == []
-    assert body["actions"] == []
+    assert body["summary"] is not None
+    assert len(body["win_patterns"]) >= 1
+    assert len(body["loss_patterns"]) >= 1
+    assert len(body["actions"]) >= 1
     assert body["stats"]["closed_trade_count"] == 1
     assert body["stats"]["open_trade_count"] == 1
     assert body["stats"]["win_trade_count"] == 1
     assert body["data_sufficiency"]["enough_data"] is False
-    assert body["data_sufficiency"]["llm_status"] == "insufficient_data"
+    assert body["data_sufficiency"]["llm_status"] == "rule_based"
 
 
 def test_analysis_summary_generates_llm_sections_when_configured(client, monkeypatch):
@@ -281,11 +282,36 @@ def test_analysis_summary_falls_back_to_stats_when_llm_fails(client, monkeypatch
         res = client.get("/api/v1/analysis/summary")
         assert res.status_code == 200
         body = res.json()
-        assert body["summary"] is None
+        assert body["summary"] is not None
+        assert len(body["actions"]) >= 1
         assert body["data_sufficiency"]["llm_status"] == "fallback"
         assert body["stats"]["loss_trade_count"] == 5
     finally:
         settings.openai_api_key = prev_key
+
+
+def test_analysis_summary_uses_rule_based_sections_without_openai(client):
+    for idx in range(5):
+        _create_trade(
+            client,
+            {
+                "market": "JP",
+                "symbol": f"R{idx}",
+                "fills": [
+                    {"side": "buy", "date": f"2026-06-0{idx + 1}", "price": 1000, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-06-1{idx + 1}", "price": 980 if idx % 2 else 1100, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+
+    res = client.get("/api/v1/analysis/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["data_sufficiency"]["llm_status"] == "rule_based"
+    assert body["summary"] is not None
+    assert len(body["win_patterns"]) >= 1
+    assert len(body["loss_patterns"]) >= 1
+    assert len(body["actions"]) >= 1
 
 
 def test_trades_requires_auth_when_enabled(client):
@@ -1313,6 +1339,76 @@ def test_private_mode_blocks_api_without_secret(client):
     finally:
         settings.private_mode_enabled = prev_enabled
         settings.private_mode_secret = prev_secret
+
+
+def test_rakuten_import_preview_and_commit_create_trade(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,7203,トヨタ自動車,買,100,2500,275,現物
+2026/03/10,7203,トヨタ自動車,売,100,2600,275,現物
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 1
+    assert body["error_count"] == 0
+    assert body["candidates"][0]["symbol"] == "7203"
+    assert body["candidates"][0]["buy"]["qty"] == 100
+
+    commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten.csv", "items": body["candidates"]},
+    )
+    assert commit.status_code == 200
+    commit_body = commit.json()
+    assert commit_body["created_count"] == 1
+    assert commit_body["error_count"] == 0
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    assert trades.json()["total"] == 1
+    assert trades.json()["items"][0]["symbol"] == "7203"
+
+
+def test_rakuten_import_commit_skips_duplicate_signature(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,6758,ソニーグループ,買,100,3000,275,現物
+2026/03/15,6758,ソニーグループ,売,100,3200,275,現物
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten.csv", "content": csv_content},
+    )
+    items = preview.json()["candidates"]
+
+    first = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "rakuten.csv", "items": items})
+    second = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "rakuten.csv", "items": items})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["created_count"] == 1
+    assert second.json()["created_count"] == 0
+    assert second.json()["skipped_count"] == 1
+
+
+def test_rakuten_import_preview_reports_partial_round_trip(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,9432,ＮＴＴ,買,200,150,0,現物
+2026/03/05,9432,ＮＴＴ,売,100,160,0,現物
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 0
+    assert body["error_count"] == 1
+    assert body["errors"][0]["code"] == "partial_round_trip_unsupported"
 
 
 def test_prices_route_returns_bars_from_yahoo_provider(client, monkeypatch):
