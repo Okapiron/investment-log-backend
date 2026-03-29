@@ -17,6 +17,14 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("AUTH_ENABLED", "APP_AUTH_ENABLED"),
     )
+    private_mode_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PRIVATE_MODE_ENABLED", "APP_PRIVATE_MODE_ENABLED"),
+    )
+    private_mode_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("PRIVATE_MODE_SECRET", "APP_PRIVATE_MODE_SECRET"),
+    )
     supabase_jwt_secret: str = Field(
         default="",
         validation_alias=AliasChoices("SUPABASE_JWT_SECRET", "APP_SUPABASE_JWT_SECRET"),
@@ -78,7 +86,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANALYSIS_MOCK_ENABLED", "APP_ANALYSIS_MOCK_ENABLED"),
     )
     price_provider: str = Field(
-        default="marketstack",
+        default="yahoo_unofficial",
         validation_alias=AliasChoices("PRICE_PROVIDER", "APP_PRICE_PROVIDER"),
     )
     price_cache_ttl_seconds: int = Field(
@@ -100,6 +108,18 @@ class Settings(BaseSettings):
     marketstack_jp_mic: str = Field(
         default="XTKS",
         validation_alias=AliasChoices("MARKETSTACK_JP_MIC", "APP_MARKETSTACK_JP_MIC"),
+    )
+    yahoo_chart_base_url: str = Field(
+        default="https://query1.finance.yahoo.com/v8/finance/chart",
+        validation_alias=AliasChoices("YAHOO_CHART_BASE_URL", "APP_YAHOO_CHART_BASE_URL"),
+    )
+    yahoo_user_agent: str = Field(
+        default=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/123.0.0.0 Safari/537.36"
+        ),
+        validation_alias=AliasChoices("YAHOO_USER_AGENT", "APP_YAHOO_USER_AGENT"),
     )
 
     @model_validator(mode="after")

@@ -50,6 +50,8 @@ def client() -> Generator[TestClient, None, None]:
 @pytest.fixture(autouse=True)
 def disable_auth_by_default() -> Generator[None, None, None]:
     prev_enabled = settings.auth_enabled
+    prev_private_mode_enabled = settings.private_mode_enabled
+    prev_private_mode_secret = settings.private_mode_secret
     prev_secret = settings.supabase_jwt_secret
     prev_invite_required = settings.invite_code_required
     prev_supabase_url = settings.supabase_url
@@ -60,6 +62,8 @@ def disable_auth_by_default() -> Generator[None, None, None]:
     prev_rate_limit_enabled = settings.rate_limit_enabled
     prev_app_version = settings.app_version
     settings.auth_enabled = False
+    settings.private_mode_enabled = False
+    settings.private_mode_secret = ""
     settings.supabase_jwt_secret = ""
     settings.invite_code_required = False
     settings.supabase_url = ""
@@ -73,6 +77,8 @@ def disable_auth_by_default() -> Generator[None, None, None]:
         yield
     finally:
         settings.auth_enabled = prev_enabled
+        settings.private_mode_enabled = prev_private_mode_enabled
+        settings.private_mode_secret = prev_private_mode_secret
         settings.supabase_jwt_secret = prev_secret
         settings.invite_code_required = prev_invite_required
         settings.supabase_url = prev_supabase_url

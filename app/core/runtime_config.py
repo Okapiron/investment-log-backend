@@ -21,6 +21,11 @@ def evaluate_runtime_config_issues(settings) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
 
+    if settings.private_mode_enabled and _is_blank(settings.private_mode_secret):
+        errors.append("PRIVATE_MODE_SECRET is required when PRIVATE_MODE_ENABLED=true")
+    if settings.private_mode_enabled and settings.auth_enabled:
+        warnings.append("AUTH_ENABLED=true while PRIVATE_MODE_ENABLED=true (private mode normally uses AUTH_ENABLED=false)")
+
     if settings.auth_enabled:
         db_url = str(settings.database_url or "").strip().lower()
         if db_url.startswith("sqlite"):

@@ -1,13 +1,15 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 
 from app.api import accounts, analysis, assets, dashboard, monthly, prices, settings as settings_api, snapshots, trades
 from app.core.config import settings
 from app.core.observability import RequestIdMiddleware
+from app.core.private_access import ensure_private_api_access
 from app.core.rate_limit import SimpleRateLimitMiddleware
 from app.core.runtime_config import evaluate_runtime_config_issues, parse_cors_origins
 from app.db.base import Base
@@ -92,6 +94,16 @@ if settings.rate_limit_enabled:
         max_per_minute=settings.rate_limit_per_minute,
         api_prefix=settings.api_prefix,
     )
+
+
+@app.middleware("http")
+async def private_api_access_middleware(request: Request, call_next):
+    if request.url.path.startswith(settings.api_prefix):
+        try:
+            ensure_private_api_access(request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
 
 
 @app.get("/health")

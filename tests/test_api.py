@@ -5,6 +5,7 @@ import hmac
 import json
 import time
 from typing import Optional
+from urllib.error import HTTPError
 
 from sqlalchemy import select
 
@@ -71,6 +72,25 @@ def test_runtime_config_requires_release_fields_when_auth_enabled():
         settings.ops_alert_target = prev_ops_alert_target
         settings.db_backup_strategy = prev_db_backup_strategy
         settings.cors_allow_origins = prev_cors_allow_origins
+
+
+def test_runtime_config_requires_private_mode_secret():
+    prev_private_mode_enabled = settings.private_mode_enabled
+    prev_private_mode_secret = settings.private_mode_secret
+    prev_auth_enabled = settings.auth_enabled
+
+    try:
+        settings.private_mode_enabled = True
+        settings.private_mode_secret = ""
+        settings.auth_enabled = False
+
+        errors, warnings = get_runtime_config_issues()
+        assert "PRIVATE_MODE_SECRET is required when PRIVATE_MODE_ENABLED=true" in errors
+        assert warnings == []
+    finally:
+        settings.private_mode_enabled = prev_private_mode_enabled
+        settings.private_mode_secret = prev_private_mode_secret
+        settings.auth_enabled = prev_auth_enabled
 
 
 def test_health_endpoints(client):
@@ -1273,15 +1293,35 @@ def test_us_trade_detail_is_available(client):
     assert detail.status_code == 200
     assert detail.json()["market"] == "US"
 
-def test_prices_route_returns_bars_from_marketstack_provider(client, monkeypatch):
-    prev_access_key = settings.marketstack_access_key
+def test_private_mode_blocks_api_without_secret(client):
+    prev_enabled = settings.private_mode_enabled
+    prev_secret = settings.private_mode_secret
+
+    try:
+        settings.private_mode_enabled = True
+        settings.private_mode_secret = "test-secret"
+
+        blocked = client.get("/api/v1/trades")
+        assert blocked.status_code == 403
+        assert blocked.json()["detail"] == "private access required"
+
+        allowed = client.get("/api/v1/trades", headers={"X-TradeTrace-Secret": "test-secret"})
+        assert allowed.status_code == 200
+
+        blocked_prices = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL"})
+        assert blocked_prices.status_code == 403
+    finally:
+        settings.private_mode_enabled = prev_enabled
+        settings.private_mode_secret = prev_secret
+
+
+def test_prices_route_returns_bars_from_yahoo_provider(client, monkeypatch):
     prev_provider = settings.price_provider
-    prev_base_url = settings.marketstack_base_url
-    prev_jp_mic = settings.marketstack_jp_mic
-    settings.marketstack_access_key = "test-key"
-    settings.price_provider = "marketstack"
-    settings.marketstack_base_url = "https://api.marketstack.com/v2"
-    settings.marketstack_jp_mic = "XTKS"
+    prev_base_url = settings.yahoo_chart_base_url
+    prev_user_agent = settings.yahoo_user_agent
+    settings.price_provider = "yahoo_unofficial"
+    settings.yahoo_chart_base_url = "https://query1.finance.yahoo.com/v8/finance/chart"
+    settings.yahoo_user_agent = "test-agent"
 
     class _FakeResponse:
         def __enter__(self):
@@ -1293,29 +1333,25 @@ def test_prices_route_returns_bars_from_marketstack_provider(client, monkeypatch
         def read(self):
             return json.dumps(
                 {
-                    "pagination": {"limit": 1000, "offset": 0, "count": 2, "total": 2},
-                    "data": [
-                        {
-                            "symbol": "7203",
-                            "exchange": "XTKS",
-                            "date": "2026-03-26T00:00:00+0000",
-                            "open": 990,
-                            "high": 1002,
-                            "low": 985,
-                            "close": 1000,
-                            "volume": 8000,
-                        },
-                        {
-                            "symbol": "7203",
-                            "exchange": "XTKS",
-                            "date": "2026-03-27T00:00:00+0000",
-                            "open": 1000,
-                            "high": 1010,
-                            "low": 995,
-                            "close": 1005,
-                            "volume": 10000,
-                        },
-                    ],
+                    "chart": {
+                        "result": [
+                            {
+                                "timestamp": [1774483200, 1774569600],
+                                "indicators": {
+                                    "quote": [
+                                        {
+                                            "open": [990, 1000],
+                                            "high": [1002, 1010],
+                                            "low": [985, 995],
+                                            "close": [1000, 1005],
+                                            "volume": [8000, 10000],
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                        "error": None,
+                    }
                 }
             ).encode("utf-8")
 
@@ -1330,16 +1366,15 @@ def test_prices_route_returns_bars_from_marketstack_provider(client, monkeypatch
         assert body["symbol"] == "7203"
         assert [bar["time"] for bar in body["bars"]] == ["2026-03-26", "2026-03-27"]
     finally:
-        settings.marketstack_access_key = prev_access_key
         settings.price_provider = prev_provider
-        settings.marketstack_base_url = prev_base_url
-        settings.marketstack_jp_mic = prev_jp_mic
+        settings.yahoo_chart_base_url = prev_base_url
+        settings.yahoo_user_agent = prev_user_agent
         price_provider_core._CACHE.clear()
 
 
 def test_prices_route_returns_us_bars_without_exchange(client, monkeypatch):
-    prev_access_key = settings.marketstack_access_key
-    settings.marketstack_access_key = "test-key"
+    prev_provider = settings.price_provider
+    settings.price_provider = "yahoo_unofficial"
 
     class _FakeResponse:
         def __enter__(self):
@@ -1351,29 +1386,25 @@ def test_prices_route_returns_us_bars_without_exchange(client, monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "pagination": {"limit": 1000, "offset": 0, "count": 2, "total": 2},
-                    "data": [
-                        {
-                            "symbol": "AAPL",
-                            "exchange": "XNAS",
-                            "date": "2026-03-26T00:00:00+0000",
-                            "open": 200,
-                            "high": 205,
-                            "low": 198,
-                            "close": 204,
-                            "volume": 150000,
-                        },
-                        {
-                            "symbol": "AAPL",
-                            "exchange": "XNAS",
-                            "date": "2026-03-27T00:00:00+0000",
-                            "open": 204,
-                            "high": 206,
-                            "low": 202,
-                            "close": 205,
-                            "volume": 120000,
-                        },
-                    ],
+                    "chart": {
+                        "result": [
+                            {
+                                "timestamp": [1774483200, 1774569600],
+                                "indicators": {
+                                    "quote": [
+                                        {
+                                            "open": [200, 204],
+                                            "high": [205, 206],
+                                            "low": [198, 202],
+                                            "close": [204, 205],
+                                            "volume": [150000, 120000],
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                        "error": None,
+                    }
                 }
             ).encode("utf-8")
 
@@ -1388,5 +1419,63 @@ def test_prices_route_returns_us_bars_without_exchange(client, monkeypatch):
         assert body["symbol"] == "AAPL"
         assert [bar["time"] for bar in body["bars"]] == ["2026-03-26", "2026-03-27"]
     finally:
-        settings.marketstack_access_key = prev_access_key
+        settings.price_provider = prev_provider
+        price_provider_core._CACHE.clear()
+
+
+def test_prices_route_returns_stale_cache_when_yahoo_fails(client, monkeypatch):
+    prev_provider = settings.price_provider
+    settings.price_provider = "yahoo_unofficial"
+
+    class _SuccessResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "chart": {
+                        "result": [
+                            {
+                                "timestamp": [1774483200],
+                                "indicators": {
+                                    "quote": [
+                                        {
+                                            "open": [200],
+                                            "high": [205],
+                                            "low": [198],
+                                            "close": [204],
+                                            "volume": [150000],
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                        "error": None,
+                    }
+                }
+            ).encode("utf-8")
+
+    call_count = {"value": 0}
+
+    def _fake_urlopen(*args, **kwargs):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            return _SuccessResponse()
+        raise HTTPError(url="https://query1.finance.yahoo.com", code=503, msg="down", hdrs=None, fp=None)
+
+    monkeypatch.setattr(price_provider_core, "urlopen", _fake_urlopen)
+    price_provider_core._CACHE.clear()
+
+    try:
+        first = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL", "interval": "1d"})
+        assert first.status_code == 200
+        second = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL", "interval": "1d"})
+        assert second.status_code == 200
+        assert second.json()["bars"][0]["close"] == 204
+    finally:
+        settings.price_provider = prev_provider
         price_provider_core._CACHE.clear()
