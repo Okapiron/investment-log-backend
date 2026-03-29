@@ -53,6 +53,30 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("DB_BACKUP_STRATEGY", "APP_DB_BACKUP_STRATEGY"),
     )
+    openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPENAI_API_KEY", "APP_OPENAI_API_KEY"),
+    )
+    openai_model: str = Field(
+        default="gpt-4.1-mini",
+        validation_alias=AliasChoices("OPENAI_MODEL", "APP_OPENAI_MODEL"),
+    )
+    openai_base_url: str = Field(
+        default="https://api.openai.com/v1/responses",
+        validation_alias=AliasChoices("OPENAI_BASE_URL", "APP_OPENAI_BASE_URL"),
+    )
+    openai_timeout_ms: int = Field(
+        default=12000,
+        validation_alias=AliasChoices("OPENAI_TIMEOUT_MS", "APP_OPENAI_TIMEOUT_MS"),
+    )
+    analysis_cache_ttl_seconds: int = Field(
+        default=300,
+        validation_alias=AliasChoices("ANALYSIS_CACHE_TTL_SECONDS", "APP_ANALYSIS_CACHE_TTL_SECONDS"),
+    )
+    analysis_mock_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ANALYSIS_MOCK_ENABLED", "APP_ANALYSIS_MOCK_ENABLED"),
+    )
 
     @model_validator(mode="after")
     def normalize_database_url(self):

@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
 
-from app.api import accounts, assets, dashboard, monthly, prices, settings as settings_api, snapshots, trades
+from app.api import accounts, analysis, assets, dashboard, monthly, prices, settings as settings_api, snapshots, trades
 from app.core.config import settings
 from app.core.observability import RequestIdMiddleware
 from app.core.rate_limit import SimpleRateLimitMiddleware
@@ -116,5 +116,6 @@ app.include_router(snapshots.router, prefix=settings.api_prefix)
 app.include_router(dashboard.router, prefix=settings.api_prefix)
 app.include_router(monthly.router, prefix=settings.api_prefix)
 app.include_router(trades.router, prefix=settings.api_prefix)
+app.include_router(analysis.router, prefix=settings.api_prefix)
 app.include_router(prices.router, prefix=settings.api_prefix)
 app.include_router(settings_api.router, prefix=settings.api_prefix)

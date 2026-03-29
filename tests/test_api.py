@@ -4,10 +4,12 @@ import hashlib
 import hmac
 import json
 import time
+from typing import Optional
 
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core import analysis as analysis_core
 from app.core.invites import hash_invite_code
 from app.db.models import InviteCode
 from app.main import app, get_runtime_config_issues
@@ -36,6 +38,7 @@ def test_openapi(client):
     assert "/api/v1/monthly" in data["paths"]
     assert "/api/v1/snapshots/copy-latest" in data["paths"]
     assert "/api/v1/trades" in data["paths"]
+    assert "/api/v1/analysis/summary" in data["paths"]
 
 
 def test_runtime_config_requires_release_fields_when_auth_enabled():
@@ -109,6 +112,159 @@ def test_health_endpoints(client):
     assert prefixed_ready.headers.get("x-content-type-options") == "nosniff"
     assert prefixed_ready.headers.get("x-frame-options") == "DENY"
     assert prefixed_ready.headers.get("referrer-policy") == "no-referrer"
+
+
+def _create_trade(client, payload: dict, headers: Optional[dict] = None):
+    res = client.post("/api/v1/trades", json=payload, headers=headers or {})
+    assert res.status_code == 201
+    return res
+
+
+def test_analysis_summary_insufficient_data_returns_stats_only(client):
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "AAA1",
+            "rating": 3,
+            "tags": "順張り,押し目",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-03-05", "price": 1100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    _create_trade(
+        client,
+        {
+            "market": "US",
+            "symbol": "AAPL",
+            "fills": [
+                {"side": "buy", "date": "2026-03-10", "price": 10.5, "qty": 2, "fee": 0},
+            ],
+        },
+    )
+
+    res = client.get("/api/v1/analysis/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["summary"] is None
+    assert body["win_patterns"] == []
+    assert body["loss_patterns"] == []
+    assert body["actions"] == []
+    assert body["stats"]["closed_trade_count"] == 1
+    assert body["stats"]["open_trade_count"] == 1
+    assert body["stats"]["win_trade_count"] == 1
+    assert body["data_sufficiency"]["enough_data"] is False
+    assert body["data_sufficiency"]["llm_status"] == "insufficient_data"
+
+
+def test_analysis_summary_generates_llm_sections_when_configured(client, monkeypatch):
+    prev_key = settings.openai_api_key
+    settings.openai_api_key = "test-key"
+
+    for idx in range(5):
+        _create_trade(
+            client,
+            {
+                "market": "JP" if idx % 2 == 0 else "US",
+                "symbol": f"T{idx}",
+                "rating": 4,
+                "tags": "順張り,決算",
+                "notes_buy": "エントリー理由",
+                "notes_sell": "利確理由",
+                "notes_review": "振り返りメモ",
+                "fills": [
+                    {"side": "buy", "date": f"2026-03-0{idx + 1}", "price": 100 + idx, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-03-1{idx + 1}", "price": 110 + idx, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+
+    def fake_generate(stats, closed, user_key):
+        return (
+            "全体として利確は安定していますが、同じ理由の再現性確認が必要です。",
+            ["勝ちトレードは順張りタグに偏っています。"],
+            ["負けパターンはまだ十分に観測されていません。"],
+            ["エントリー理由と利確理由の組み合わせを継続記録してください。"],
+            user_key,
+        )
+
+    monkeypatch.setattr(analysis_core, "_generate_llm_sections", fake_generate)
+
+    try:
+        res = client.get("/api/v1/analysis/summary")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["summary"].startswith("全体として利確")
+        assert body["data_sufficiency"]["enough_data"] is True
+        assert body["data_sufficiency"]["llm_status"] == "generated"
+        assert len(body["win_patterns"]) == 1
+        assert len(body["actions"]) == 1
+    finally:
+        settings.openai_api_key = prev_key
+
+
+def test_analysis_summary_uses_mock_mode_without_openai_key(client):
+    prev_mock = settings.analysis_mock_enabled
+    settings.analysis_mock_enabled = True
+
+    for idx in range(5):
+        _create_trade(
+            client,
+            {
+                "market": "JP",
+                "symbol": f"M{idx}",
+                "tags": "順張り,反発",
+                "fills": [
+                    {"side": "buy", "date": f"2026-05-0{idx + 1}", "price": 1000, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-05-1{idx + 1}", "price": 1050, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+
+    try:
+        res = client.get("/api/v1/analysis/summary")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["data_sufficiency"]["llm_status"] == "mock"
+        assert "テスト用のAI要約" in body["summary"]
+        assert len(body["actions"]) == 3
+    finally:
+        settings.analysis_mock_enabled = prev_mock
+
+
+def test_analysis_summary_falls_back_to_stats_when_llm_fails(client, monkeypatch):
+    prev_key = settings.openai_api_key
+    settings.openai_api_key = "test-key"
+
+    for idx in range(5):
+        _create_trade(
+            client,
+            {
+                "market": "JP",
+                "symbol": f"F{idx}",
+                "fills": [
+                    {"side": "buy", "date": f"2026-04-0{idx + 1}", "price": 1000, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-04-1{idx + 1}", "price": 900, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+
+    def fake_failure(stats, closed, user_key):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(analysis_core, "_generate_llm_sections", fake_failure)
+
+    try:
+        res = client.get("/api/v1/analysis/summary")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["summary"] is None
+        assert body["data_sufficiency"]["llm_status"] == "fallback"
+        assert body["stats"]["loss_trade_count"] == 5
+    finally:
+        settings.openai_api_key = prev_key
 
 
 def test_trades_requires_auth_when_enabled(client):
