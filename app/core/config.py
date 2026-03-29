@@ -77,6 +77,22 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ANALYSIS_MOCK_ENABLED", "APP_ANALYSIS_MOCK_ENABLED"),
     )
+    price_provider: str = Field(
+        default="alpha_vantage",
+        validation_alias=AliasChoices("PRICE_PROVIDER", "APP_PRICE_PROVIDER"),
+    )
+    price_cache_ttl_seconds: int = Field(
+        default=43200,
+        validation_alias=AliasChoices("PRICE_CACHE_TTL_SECONDS", "APP_PRICE_CACHE_TTL_SECONDS"),
+    )
+    alpha_vantage_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("ALPHA_VANTAGE_API_KEY", "APP_ALPHA_VANTAGE_API_KEY"),
+    )
+    alpha_vantage_jp_suffix: str = Field(
+        default="TYO",
+        validation_alias=AliasChoices("ALPHA_VANTAGE_JP_SUFFIX", "APP_ALPHA_VANTAGE_JP_SUFFIX"),
+    )
 
     @model_validator(mode="after")
     def normalize_database_url(self):

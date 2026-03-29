@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core import analysis as analysis_core
+from app.core import price_provider as price_provider_core
 from app.core.invites import hash_invite_code
 from app.db.models import InviteCode
 from app.main import app, get_runtime_config_issues
@@ -494,7 +495,7 @@ def test_settings_export_and_delete_are_user_scoped(client):
 
     list_b = client.get("/api/v1/trades", headers=headers_b)
     assert list_b.status_code == 200
-    assert list_b.json()["total"] == 1
+    assert list_b.json()["total"] == 0
 
 
 def test_settings_runtime_available_when_auth_disabled(client):
@@ -1079,10 +1080,10 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
     open_created = client.post(
         "/api/v1/trades",
         json={
-            "market": "US",
-            "symbol": "AAPL",
+            "market": "JP",
+            "symbol": "7203",
             "fills": [
-                {"side": "buy", "date": "2026-04-01", "price": 100, "qty": 5, "fee": 0},
+                {"side": "buy", "date": "2026-04-01", "price": 1000, "qty": 5, "fee": 0},
             ],
         },
     )
@@ -1093,7 +1094,7 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
         f"/api/v1/trades/{open_id}",
         json={
             "buy_date": "2026-04-01",
-            "buy_price": 100,
+            "buy_price": 1000,
             "buy_qty": 5,
             "sell_date": "2026-04-05",
         },
@@ -1137,7 +1138,7 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
     assert mixed_review.status_code == 422
 
 
-def test_trades_name_sort_groups_jp_and_us(client):
+def test_trades_name_sort_lists_only_jp_by_default(client):
     payloads = [
         {
             "market": "JP",
@@ -1183,14 +1184,14 @@ def test_trades_name_sort_groups_jp_and_us(client):
     asc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "asc", "limit": 20, "offset": 0})
     assert asc.status_code == 200
     asc_items = asc.json()["items"]
-    assert [x["market"] for x in asc_items] == ["JP", "JP", "US", "US"]
-    assert [x["symbol"] for x in asc_items] == ["6479", "7203", "AAPL", "MSFT"]
+    assert [x["market"] for x in asc_items] == ["JP", "JP"]
+    assert [x["symbol"] for x in asc_items] == ["6479", "7203"]
 
     desc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "desc", "limit": 20, "offset": 0})
     assert desc.status_code == 200
     desc_items = desc.json()["items"]
-    assert [x["market"] for x in desc_items] == ["US", "US", "JP", "JP"]
-    assert [x["symbol"] for x in desc_items] == ["MSFT", "AAPL", "7203", "6479"]
+    assert [x["market"] for x in desc_items] == ["JP", "JP"]
+    assert [x["symbol"] for x in desc_items] == ["7203", "6479"]
 
 
 def test_trades_status_sort(client):
@@ -1246,9 +1247,80 @@ def test_trades_status_sort(client):
     asc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "asc", "limit": 20, "offset": 0})
     assert asc.status_code == 200
     asc_symbols = [x["symbol"] for x in asc.json()["items"]]
-    assert asc_symbols == ["CMP", "PND", "OPN"]
+    assert asc_symbols == ["CMP", "PND"]
 
     desc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "desc", "limit": 20, "offset": 0})
     assert desc.status_code == 200
     desc_symbols = [x["symbol"] for x in desc.json()["items"]]
-    assert desc_symbols == ["OPN", "PND", "CMP"]
+    assert desc_symbols == ["PND", "CMP"]
+
+
+def test_us_trade_detail_is_hidden_from_normal_route(client):
+    created = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "US",
+            "symbol": "AAPL",
+            "fills": [
+                {"side": "buy", "date": "2026-06-01", "price": 100, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    assert created.status_code == 201
+    trade_id = created.json()["id"]
+
+    detail = client.get(f"/api/v1/trades/{trade_id}")
+    assert detail.status_code == 404
+
+
+def test_prices_route_returns_jp_bars_from_provider(client, monkeypatch):
+    prev_api_key = settings.alpha_vantage_api_key
+    settings.alpha_vantage_api_key = "test-key"
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "Time Series (Daily)": {
+                        "2026-03-27": {
+                            "1. open": "1000",
+                            "2. high": "1010",
+                            "3. low": "995",
+                            "4. close": "1005",
+                            "5. volume": "10000",
+                        },
+                        "2026-03-26": {
+                            "1. open": "990",
+                            "2. high": "1002",
+                            "3. low": "985",
+                            "4. close": "1000",
+                            "5. volume": "8000",
+                        },
+                    }
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(price_provider_core, "urlopen", lambda *args, **kwargs: _FakeResponse())
+    price_provider_core._CACHE.clear()
+
+    try:
+        res = client.get("/api/v1/prices", params={"market": "JP", "symbol": "7203", "interval": "1d"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["market"] == "JP"
+        assert body["symbol"] == "7203"
+        assert [bar["time"] for bar in body["bars"]] == ["2026-03-26", "2026-03-27"]
+    finally:
+        settings.alpha_vantage_api_key = prev_api_key
+        price_provider_core._CACHE.clear()
+
+
+def test_prices_route_rejects_us_market(client):
+    res = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL", "interval": "1d"})
+    assert res.status_code == 404
