@@ -78,20 +78,28 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANALYSIS_MOCK_ENABLED", "APP_ANALYSIS_MOCK_ENABLED"),
     )
     price_provider: str = Field(
-        default="alpha_vantage",
+        default="marketstack",
         validation_alias=AliasChoices("PRICE_PROVIDER", "APP_PRICE_PROVIDER"),
     )
     price_cache_ttl_seconds: int = Field(
         default=43200,
         validation_alias=AliasChoices("PRICE_CACHE_TTL_SECONDS", "APP_PRICE_CACHE_TTL_SECONDS"),
     )
-    alpha_vantage_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices("ALPHA_VANTAGE_API_KEY", "APP_ALPHA_VANTAGE_API_KEY"),
+    price_history_days: int = Field(
+        default=400,
+        validation_alias=AliasChoices("PRICE_HISTORY_DAYS", "APP_PRICE_HISTORY_DAYS"),
     )
-    alpha_vantage_jp_suffix: str = Field(
-        default="TYO",
-        validation_alias=AliasChoices("ALPHA_VANTAGE_JP_SUFFIX", "APP_ALPHA_VANTAGE_JP_SUFFIX"),
+    marketstack_access_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("MARKETSTACK_ACCESS_KEY", "APP_MARKETSTACK_ACCESS_KEY"),
+    )
+    marketstack_base_url: str = Field(
+        default="https://api.marketstack.com/v2",
+        validation_alias=AliasChoices("MARKETSTACK_BASE_URL", "APP_MARKETSTACK_BASE_URL"),
+    )
+    marketstack_jp_mic: str = Field(
+        default="XTKS",
+        validation_alias=AliasChoices("MARKETSTACK_JP_MIC", "APP_MARKETSTACK_JP_MIC"),
     )
 
     @model_validator(mode="after")

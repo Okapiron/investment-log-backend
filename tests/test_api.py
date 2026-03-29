@@ -495,7 +495,7 @@ def test_settings_export_and_delete_are_user_scoped(client):
 
     list_b = client.get("/api/v1/trades", headers=headers_b)
     assert list_b.status_code == 200
-    assert list_b.json()["total"] == 0
+    assert list_b.json()["total"] == 1
 
 
 def test_settings_runtime_available_when_auth_disabled(client):
@@ -1138,7 +1138,7 @@ def test_trade_detail_update_rejects_partial_sell_and_allows_reopen(client):
     assert mixed_review.status_code == 422
 
 
-def test_trades_name_sort_lists_only_jp_by_default(client):
+def test_trades_name_sort_groups_jp_and_us(client):
     payloads = [
         {
             "market": "JP",
@@ -1184,14 +1184,14 @@ def test_trades_name_sort_lists_only_jp_by_default(client):
     asc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "asc", "limit": 20, "offset": 0})
     assert asc.status_code == 200
     asc_items = asc.json()["items"]
-    assert [x["market"] for x in asc_items] == ["JP", "JP"]
-    assert [x["symbol"] for x in asc_items] == ["6479", "7203"]
+    assert [x["market"] for x in asc_items] == ["JP", "JP", "US", "US"]
+    assert [x["symbol"] for x in asc_items] == ["6479", "7203", "AAPL", "MSFT"]
 
     desc = client.get("/api/v1/trades", params={"sort": "name", "sort_dir": "desc", "limit": 20, "offset": 0})
     assert desc.status_code == 200
     desc_items = desc.json()["items"]
-    assert [x["market"] for x in desc_items] == ["JP", "JP"]
-    assert [x["symbol"] for x in desc_items] == ["7203", "6479"]
+    assert [x["market"] for x in desc_items] == ["US", "US", "JP", "JP"]
+    assert [x["symbol"] for x in desc_items] == ["MSFT", "AAPL", "7203", "6479"]
 
 
 def test_trades_status_sort(client):
@@ -1247,15 +1247,15 @@ def test_trades_status_sort(client):
     asc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "asc", "limit": 20, "offset": 0})
     assert asc.status_code == 200
     asc_symbols = [x["symbol"] for x in asc.json()["items"]]
-    assert asc_symbols == ["CMP", "PND"]
+    assert asc_symbols == ["CMP", "PND", "OPN"]
 
     desc = client.get("/api/v1/trades", params={"sort": "status", "sort_dir": "desc", "limit": 20, "offset": 0})
     assert desc.status_code == 200
     desc_symbols = [x["symbol"] for x in desc.json()["items"]]
-    assert desc_symbols == ["PND", "CMP"]
+    assert desc_symbols == ["OPN", "PND", "CMP"]
 
 
-def test_us_trade_detail_is_hidden_from_normal_route(client):
+def test_us_trade_detail_is_available(client):
     created = client.post(
         "/api/v1/trades",
         json={
@@ -1270,12 +1270,18 @@ def test_us_trade_detail_is_hidden_from_normal_route(client):
     trade_id = created.json()["id"]
 
     detail = client.get(f"/api/v1/trades/{trade_id}")
-    assert detail.status_code == 404
+    assert detail.status_code == 200
+    assert detail.json()["market"] == "US"
 
-
-def test_prices_route_returns_jp_bars_from_provider(client, monkeypatch):
-    prev_api_key = settings.alpha_vantage_api_key
-    settings.alpha_vantage_api_key = "test-key"
+def test_prices_route_returns_bars_from_marketstack_provider(client, monkeypatch):
+    prev_access_key = settings.marketstack_access_key
+    prev_provider = settings.price_provider
+    prev_base_url = settings.marketstack_base_url
+    prev_jp_mic = settings.marketstack_jp_mic
+    settings.marketstack_access_key = "test-key"
+    settings.price_provider = "marketstack"
+    settings.marketstack_base_url = "https://api.marketstack.com/v2"
+    settings.marketstack_jp_mic = "XTKS"
 
     class _FakeResponse:
         def __enter__(self):
@@ -1287,22 +1293,29 @@ def test_prices_route_returns_jp_bars_from_provider(client, monkeypatch):
         def read(self):
             return json.dumps(
                 {
-                    "Time Series (Daily)": {
-                        "2026-03-27": {
-                            "1. open": "1000",
-                            "2. high": "1010",
-                            "3. low": "995",
-                            "4. close": "1005",
-                            "5. volume": "10000",
+                    "pagination": {"limit": 1000, "offset": 0, "count": 2, "total": 2},
+                    "data": [
+                        {
+                            "symbol": "7203",
+                            "exchange": "XTKS",
+                            "date": "2026-03-26T00:00:00+0000",
+                            "open": 990,
+                            "high": 1002,
+                            "low": 985,
+                            "close": 1000,
+                            "volume": 8000,
                         },
-                        "2026-03-26": {
-                            "1. open": "990",
-                            "2. high": "1002",
-                            "3. low": "985",
-                            "4. close": "1000",
-                            "5. volume": "8000",
+                        {
+                            "symbol": "7203",
+                            "exchange": "XTKS",
+                            "date": "2026-03-27T00:00:00+0000",
+                            "open": 1000,
+                            "high": 1010,
+                            "low": 995,
+                            "close": 1005,
+                            "volume": 10000,
                         },
-                    }
+                    ],
                 }
             ).encode("utf-8")
 
@@ -1317,10 +1330,63 @@ def test_prices_route_returns_jp_bars_from_provider(client, monkeypatch):
         assert body["symbol"] == "7203"
         assert [bar["time"] for bar in body["bars"]] == ["2026-03-26", "2026-03-27"]
     finally:
-        settings.alpha_vantage_api_key = prev_api_key
+        settings.marketstack_access_key = prev_access_key
+        settings.price_provider = prev_provider
+        settings.marketstack_base_url = prev_base_url
+        settings.marketstack_jp_mic = prev_jp_mic
         price_provider_core._CACHE.clear()
 
 
-def test_prices_route_rejects_us_market(client):
-    res = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL", "interval": "1d"})
-    assert res.status_code == 404
+def test_prices_route_returns_us_bars_without_exchange(client, monkeypatch):
+    prev_access_key = settings.marketstack_access_key
+    settings.marketstack_access_key = "test-key"
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "pagination": {"limit": 1000, "offset": 0, "count": 2, "total": 2},
+                    "data": [
+                        {
+                            "symbol": "AAPL",
+                            "exchange": "XNAS",
+                            "date": "2026-03-26T00:00:00+0000",
+                            "open": 200,
+                            "high": 205,
+                            "low": 198,
+                            "close": 204,
+                            "volume": 150000,
+                        },
+                        {
+                            "symbol": "AAPL",
+                            "exchange": "XNAS",
+                            "date": "2026-03-27T00:00:00+0000",
+                            "open": 204,
+                            "high": 206,
+                            "low": 202,
+                            "close": 205,
+                            "volume": 120000,
+                        },
+                    ],
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(price_provider_core, "urlopen", lambda *args, **kwargs: _FakeResponse())
+    price_provider_core._CACHE.clear()
+
+    try:
+        res = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL", "interval": "1d"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["market"] == "US"
+        assert body["symbol"] == "AAPL"
+        assert [bar["time"] for bar in body["bars"]] == ["2026-03-26", "2026-03-27"]
+    finally:
+        settings.marketstack_access_key = prev_access_key
+        price_provider_core._CACHE.clear()

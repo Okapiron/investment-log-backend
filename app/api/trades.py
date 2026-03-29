@@ -23,10 +23,6 @@ from app.schemas.trade import FillRead, TradeCreate, TradeListRead, TradeListSta
 router = APIRouter(prefix="/trades", tags=["trades"])
 
 
-def _is_visible_market(market: Optional[str]) -> bool:
-    return str(market or "").strip().upper() == "JP"
-
-
 def _scoped_user_id(claims: dict) -> Optional[str]:
     if not settings.auth_enabled:
         return None
@@ -227,7 +223,8 @@ def _name_sort_key(item: TradeRead):
     if not label:
         return None
 
-    return (_normalize_name_for_sort(label), fallback_symbol.casefold())
+    market_rank = 0 if item.market == "JP" else 1 if item.market == "US" else 2
+    return (market_rank, _normalize_name_for_sort(label), fallback_symbol.casefold())
 
 
 @router.get("", response_model=TradeListRead)
@@ -261,11 +258,9 @@ def list_trades(
         stmt = stmt.where(Trade.user_id == scoped_user_id)
 
     # minimal DB prefilter for obvious dimensions
-    market_values = [v for v in _parse_csv(market) if v == "JP"]
+    market_values = [v for v in _parse_csv(market) if v in {"JP", "US"}]
     if market_values:
         stmt = stmt.where(Trade.market.in_(market_values))
-    else:
-        stmt = stmt.where(Trade.market == "JP")
 
     rating_values = []
     for v in _parse_csv(rating):
@@ -499,7 +494,7 @@ def get_trade(
 ):
     scoped_user_id = _scoped_user_id(claims)
     trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
-    if trade is None or not _is_visible_market(trade.market):
+    if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
     return _to_trade_read(trade)
 
@@ -513,7 +508,7 @@ def update_trade(
 ):
     scoped_user_id = _scoped_user_id(claims)
     trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
-    if trade is None or not _is_visible_market(trade.market):
+    if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
 
     patch_data = payload.model_dump(exclude_unset=True)
@@ -552,7 +547,7 @@ def delete_trade(
 ):
     scoped_user_id = _scoped_user_id(claims)
     trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
-    if trade is None or not _is_visible_market(trade.market):
+    if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
 
     db.delete(trade)
