@@ -49,6 +49,7 @@ _HEADER_ALIASES = {
     "build_price": {"建単価［円］", "建単価[円]", "建単価"},
     "build_fee": {"建手数料［円］", "建手数料[円]", "建手数料"},
     "build_fee_tax": {"建手数料消費税［円］", "建手数料消費税[円]", "建手数料消費税"},
+    "settlement_amount": {"受渡金額［円］", "受渡金額[円]", "受渡金額"},
 }
 
 
@@ -57,6 +58,7 @@ class _RawCsvTrade:
     line: int
     symbol: str
     name: str
+    trade_kind: str
     side: str
     position_side: str
     date: str
@@ -72,12 +74,14 @@ class _RawCsvTrade:
     build_fee_commission_jpy: int = 0
     build_fee_tax_jpy: int = 0
     is_credit_close: bool = False
+    settlement_amount_jpy: Optional[int] = None
 
 
 @dataclass
 class _AggregatedTrade:
     symbol: str
     name: str
+    trade_kind: str
     side: str
     position_side: str
     date: str
@@ -95,12 +99,14 @@ class _AggregatedTrade:
     build_fee_commission_jpy: int = 0
     build_fee_tax_jpy: int = 0
     is_credit_close: bool = False
+    settlement_amount_jpy: Optional[int] = None
 
 
 @dataclass
 class _OpenLot:
     symbol: str
     name: str
+    trade_kind: str
     position_side: str
     date: str
     qty: int
@@ -113,6 +119,7 @@ class _OpenLot:
     lines: list[int]
     row_signatures: list[str]
     source_position_key: str
+    settlement_amount_jpy: Optional[int] = None
     next_sequence: int = 1
 
 
@@ -203,6 +210,16 @@ def _trade_context(row: dict[str, str], headers: dict[str, str]) -> tuple[str, s
     return trade_type, credit_type, side_text
 
 
+def _parse_trade_kind(row: dict[str, str], headers: dict[str, str]) -> str:
+    trade_type, credit_type, side_text = _trade_context(row, headers)
+    combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
+    if "現物" in combined:
+        return "spot"
+    if "信用" in combined or any(marker in combined for marker in ("買建", "売建", "返済", "売埋", "買埋")):
+        return "credit"
+    return "spot"
+
+
 def _is_credit_close_row(row: dict[str, str], headers: dict[str, str]) -> bool:
     trade_type, credit_type, side_text = _trade_context(row, headers)
     combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
@@ -255,21 +272,52 @@ def _row_signature(raw: _RawCsvTrade) -> str:
 
 
 def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
-    grouped: dict[tuple[str, str, str, str, str, str, bool], list[_RawCsvTrade]] = {}
+    grouped: dict[
+        tuple[str, str, str, str, str, str, str, str, int, int, int, int, int, int, Optional[int], bool],
+        list[_RawCsvTrade],
+    ] = {}
     for row in rows:
         key = (
             row.symbol,
+            row.trade_kind,
             row.side,
             row.position_side,
             row.date,
+            _price_text(row.price),
+            row.fee,
+            row.fee_commission_jpy,
+            row.fee_tax_jpy,
+            row.fee_other_jpy,
             row.build_date or "",
             str(row.build_price or ""),
+            row.build_fee,
+            row.build_fee_commission_jpy,
+            row.build_fee_tax_jpy,
+            row.settlement_amount_jpy,
             bool(row.is_credit_close),
         )
         grouped.setdefault(key, []).append(row)
 
     aggregated: list[_AggregatedTrade] = []
-    for (symbol, side, position_side, date, build_date, build_price, is_credit_close), items in grouped.items():
+    for (
+        symbol,
+        trade_kind,
+        side,
+        position_side,
+        date,
+        _row_price,
+        _row_fee,
+        _row_fee_commission,
+        _row_fee_tax,
+        _row_fee_other,
+        build_date,
+        build_price,
+        _build_fee,
+        _build_fee_commission,
+        _build_fee_tax,
+        _settlement_amount,
+        is_credit_close,
+    ), items in grouped.items():
         total_qty = sum(item.qty for item in items)
         total_fee = sum(item.fee for item in items)
         total_fee_commission = sum(item.fee_commission_jpy for item in items)
@@ -278,6 +326,7 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
         total_build_fee = sum(item.build_fee for item in items)
         total_build_fee_commission = sum(item.build_fee_commission_jpy for item in items)
         total_build_fee_tax = sum(item.build_fee_tax_jpy for item in items)
+        settlement_amounts = [item.settlement_amount_jpy for item in items if item.settlement_amount_jpy is not None]
         weighted_total = sum(item.price * item.qty for item in items)
         avg_price = (Decimal(weighted_total) / Decimal(total_qty)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         avg_build_price = None
@@ -293,6 +342,7 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
             _AggregatedTrade(
                 symbol=symbol,
                 name=name,
+                trade_kind=trade_kind,
                 side=side,
                 position_side=position_side,
                 date=date,
@@ -310,6 +360,7 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
                 build_fee_commission_jpy=total_build_fee_commission,
                 build_fee_tax_jpy=total_build_fee_tax,
                 is_credit_close=is_credit_close,
+                settlement_amount_jpy=sum(settlement_amounts) if settlement_amounts else None,
             )
         )
     aggregated.sort(key=lambda item: (item.symbol, item.date, 0 if item.side in {"buy", "sell"} and item.is_credit_close is False else 1))
@@ -397,12 +448,21 @@ def _allocate_fee_breakdown(
     return commission, tax, other, max(total, commission + tax + other)
 
 
-def _find_matching_open_lot(open_lots: list[_OpenLot], close_trade: _AggregatedTrade) -> Optional[_OpenLot]:
+def _find_matching_open_lot(open_lots: list[_OpenLot], close_trade: _AggregatedTrade) -> tuple[Optional[_OpenLot], bool]:
     if close_trade.build_date and close_trade.build_price:
         for lot in open_lots:
             if lot.date == close_trade.build_date and lot.price == close_trade.build_price:
-                return lot
-    return open_lots[0] if open_lots else None
+                return lot, False
+    if not open_lots:
+        return None, False
+
+    qty_matches = [lot for lot in open_lots if lot.remaining_qty == close_trade.qty]
+    if qty_matches:
+        qty_matches.sort(key=lambda lot: (lot.date, lot.source_position_key, lot.next_sequence))
+        return qty_matches[0], True
+
+    open_lots.sort(key=lambda lot: (lot.date, lot.source_position_key, lot.next_sequence))
+    return open_lots[0], True
 
 
 def _synthetic_open_lot_from_credit_close(close_trade: _AggregatedTrade) -> _OpenLot:
@@ -412,6 +472,7 @@ def _synthetic_open_lot_from_credit_close(close_trade: _AggregatedTrade) -> _Ope
     return _OpenLot(
         symbol=close_trade.symbol,
         name=close_trade.name,
+        trade_kind=close_trade.trade_kind,
         position_side=close_trade.position_side,
         date=open_date,
         qty=close_trade.qty,
@@ -424,6 +485,7 @@ def _synthetic_open_lot_from_credit_close(close_trade: _AggregatedTrade) -> _Ope
         lines=[],
         row_signatures=[f"synthetic:{source_key}"],
         source_position_key=source_key,
+        settlement_amount_jpy=None,
     )
 
 
@@ -434,6 +496,7 @@ def _candidate_from_buy_sell(
     open_fee: tuple[int, int, int, int],
     close_fee: tuple[int, int, int, int],
     *,
+    build_info_fallback_used: bool,
     is_partial_exit: bool,
     remaining_qty_after_sell: int,
 ) -> ImportTradeCandidateRead:
@@ -442,6 +505,7 @@ def _candidate_from_buy_sell(
     close_preview = _AggregatedTrade(
         symbol=close_trade.symbol,
         name=close_trade.name,
+        trade_kind=close_trade.trade_kind,
         side=close_trade.side,
         position_side=close_trade.position_side,
         date=close_trade.date,
@@ -453,6 +517,7 @@ def _candidate_from_buy_sell(
         fee_other_jpy=close_fee[2],
         lines=close_trade.lines,
         row_signatures=close_trade.row_signatures,
+        settlement_amount_jpy=close_trade.settlement_amount_jpy,
     )
     buy_preview = None
     sell_preview = None
@@ -466,6 +531,7 @@ def _candidate_from_buy_sell(
             fee_tax_jpy=open_fee[1],
             fee_other_jpy=open_fee[2],
             fee_total_jpy=open_fee[3],
+            settlement_amount_jpy=open_lot.settlement_amount_jpy,
         )
         buy_preview = ImportFillPreviewRead(
             date=close_trade.date,
@@ -476,6 +542,7 @@ def _candidate_from_buy_sell(
             fee_tax_jpy=close_fee[1],
             fee_other_jpy=close_fee[2],
             fee_total_jpy=close_fee[3],
+            settlement_amount_jpy=close_trade.settlement_amount_jpy,
         )
     else:
         buy_preview = ImportFillPreviewRead(
@@ -487,6 +554,7 @@ def _candidate_from_buy_sell(
             fee_tax_jpy=open_fee[1],
             fee_other_jpy=open_fee[2],
             fee_total_jpy=open_fee[3],
+            settlement_amount_jpy=open_lot.settlement_amount_jpy,
         )
         sell_preview = ImportFillPreviewRead(
             date=close_trade.date,
@@ -497,6 +565,7 @@ def _candidate_from_buy_sell(
             fee_tax_jpy=close_fee[1],
             fee_other_jpy=close_fee[2],
             fee_total_jpy=close_fee[3],
+            settlement_amount_jpy=close_trade.settlement_amount_jpy,
         )
     return ImportTradeCandidateRead(
         source_signature=_candidate_signature(
@@ -515,6 +584,7 @@ def _candidate_from_buy_sell(
         symbol=open_lot.symbol,
         name=open_lot.name or close_trade.name or open_lot.symbol,
         market="JP",
+        trade_kind=open_lot.trade_kind,
         position_side=open_lot.position_side,
         buy=buy_preview,
         sell=sell_preview,
@@ -522,6 +592,7 @@ def _candidate_from_buy_sell(
         already_imported=False,
         is_partial_exit=is_partial_exit,
         remaining_qty_after_sell=max(0, remaining_qty_after_sell),
+        build_info_fallback_used=build_info_fallback_used,
     )
 
 
@@ -537,6 +608,7 @@ def _candidate_from_open_lot(open_lot: _OpenLot, *, is_partial_exit: bool) -> Im
         fee_tax_jpy=open_lot.remaining_fee_tax_jpy,
         fee_other_jpy=open_lot.remaining_fee_other_jpy,
         fee_total_jpy=open_lot.remaining_fee,
+        settlement_amount_jpy=open_lot.settlement_amount_jpy,
     )
     return ImportTradeCandidateRead(
         source_signature=_candidate_signature(
@@ -554,6 +626,7 @@ def _candidate_from_open_lot(open_lot: _OpenLot, *, is_partial_exit: bool) -> Im
         symbol=open_lot.symbol,
         name=open_lot.name or open_lot.symbol,
         market="JP",
+        trade_kind=open_lot.trade_kind,
         position_side=open_lot.position_side,
         buy=fill_preview if open_lot.position_side == "long" else None,
         sell=fill_preview if open_lot.position_side == "short" else None,
@@ -568,11 +641,11 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
     candidates: list[ImportTradeCandidateRead] = []
     skipped: list[ImportIssueRead] = []
     errors: list[ImportIssueRead] = []
-    by_symbol: dict[tuple[str, str], list[_AggregatedTrade]] = {}
+    by_symbol: dict[tuple[str, str, str], list[_AggregatedTrade]] = {}
     for row in rows:
-        by_symbol.setdefault((row.symbol, row.position_side), []).append(row)
+        by_symbol.setdefault((row.symbol, row.position_side, row.trade_kind), []).append(row)
 
-    for (symbol, position_side), items in by_symbol.items():
+    for (symbol, position_side, trade_kind), items in by_symbol.items():
         open_side = "buy" if position_side == "long" else "sell"
         open_lots: list[_OpenLot] = []
         for item in sorted(items, key=lambda row: (row.date, 0 if row.side == open_side else 1)):
@@ -581,6 +654,7 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
                     _OpenLot(
                         symbol=item.symbol,
                         name=item.name,
+                        trade_kind=trade_kind,
                         position_side=position_side,
                         date=item.date,
                         qty=item.qty,
@@ -593,6 +667,7 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
                         lines=item.lines,
                         row_signatures=item.row_signatures,
                         source_position_key=_position_key(item.symbol, position_side, item.date, item.price),
+                        settlement_amount_jpy=item.settlement_amount_jpy,
                     )
                 )
                 continue
@@ -604,10 +679,11 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
             remaining_close_other = item.fee_other_jpy
 
             while remaining_close_qty > 0:
-                open_lot = _find_matching_open_lot(open_lots, item)
+                open_lot, build_info_fallback_used = _find_matching_open_lot(open_lots, item)
                 if open_lot is None:
                     if item.is_credit_close and item.build_date and item.build_price:
                         open_lot = _synthetic_open_lot_from_credit_close(item)
+                        build_info_fallback_used = False
                     else:
                         skipped.append(
                             ImportIssueRead(
@@ -647,6 +723,7 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
                         matched_qty,
                         open_fee,
                         close_fee,
+                        build_info_fallback_used=build_info_fallback_used,
                         is_partial_exit=is_partial_exit,
                         remaining_qty_after_sell=remaining_after_sell,
                     )
@@ -726,6 +803,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
         date = _parse_date(row.get(headers["date"]))
         symbol = _clean_text(row.get(headers["symbol"]))
         name = _clean_text(row.get(headers["name"]))
+        trade_kind = _parse_trade_kind(row, headers)
         side = _parse_row_side(row, headers)
         position_side = _parse_position_side(row, headers)
         qty = _parse_jp_int(row.get(headers["qty"]))
@@ -740,6 +818,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
         fee_other = _parse_jp_int(row.get(headers.get("other_fee", ""))) or 0
         fee_tax = _parse_jp_int(row.get(headers.get("tax_fee", ""))) or 0
         fee = fee_commission + fee_other + fee_tax
+        settlement_amount = _parse_jp_int(row.get(headers.get("settlement_amount", "")))
 
         if not all([date, symbol, name, side]) or qty is None or price is None:
             errors.append(
@@ -765,6 +844,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
                 line=index,
                 symbol=symbol,
                 name=name,
+                trade_kind=trade_kind,
                 side=side,
                 position_side=position_side,
                 date=date,
@@ -780,6 +860,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
                 build_fee_commission_jpy=max(0, build_fee_commission),
                 build_fee_tax_jpy=max(0, build_fee_tax),
                 is_credit_close=is_credit_close,
+                settlement_amount_jpy=settlement_amount,
             )
         )
 
@@ -833,12 +914,172 @@ def _parse_realized_pl_csv(content: str) -> list[RakutenAuditRowRead]:
 
 
 def _candidate_profit_jpy(item: ImportTradeCandidateRead) -> float:
+    profit, _ = _candidate_profit_and_flags(item)
+    return float(profit)
+
+
+def _fill_fee_total_decimal(fill) -> Decimal:
+    return Decimal(str(getattr(fill, "fee_total_jpy", None) or getattr(fill, "fee", 0) or 0))
+
+
+def _fill_settlement_amount_decimal(fill) -> Optional[Decimal]:
+    settlement = getattr(fill, "settlement_amount_jpy", None)
+    if settlement is None:
+        return None
+    return Decimal(str(settlement))
+
+
+def _candidate_profit_formula_decimal(item: ImportTradeCandidateRead) -> Decimal:
     if item.sell is None or item.buy is None:
-        return 0.0
+        return Decimal("0.00")
     profit = (Decimal(str(item.sell.price)) - Decimal(str(item.buy.price))) * Decimal(item.buy.qty)
-    profit -= Decimal(item.buy.fee_total_jpy or item.buy.fee or 0)
-    profit -= Decimal(item.sell.fee_total_jpy or item.sell.fee or 0)
-    return float(profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    profit -= _fill_fee_total_decimal(item.buy)
+    profit -= _fill_fee_total_decimal(item.sell)
+    return profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _candidate_profit_and_flags(item: ImportTradeCandidateRead) -> tuple[Decimal, list[str]]:
+    formula_profit = _candidate_profit_formula_decimal(item)
+    flags: list[str] = []
+    if getattr(item, "build_info_fallback_used", False):
+        flags.append("missing_build_info_fallback_used")
+    if item.sell is None or item.buy is None:
+        return formula_profit, flags
+
+    open_fill = item.buy if item.position_side == "long" else item.sell
+    close_fill = item.sell if item.position_side == "long" else item.buy
+    if open_fill is None or close_fill is None:
+        return formula_profit, flags
+
+    open_settlement = _fill_settlement_amount_decimal(open_fill)
+    close_settlement = _fill_settlement_amount_decimal(close_fill)
+
+    settlement_profit: Optional[Decimal] = None
+    if item.position_side == "long":
+        if item.trade_kind == "spot" and open_settlement is not None and close_settlement is not None:
+            settlement_profit = close_settlement - open_settlement
+        elif item.trade_kind == "credit" and close_settlement is not None and getattr(item, "build_info_fallback_used", False):
+            settlement_profit = close_settlement
+    elif item.position_side == "short" and open_settlement is not None and close_settlement is not None:
+        settlement_profit = open_settlement - close_settlement
+
+    if settlement_profit is None:
+        return formula_profit, flags
+
+    settlement_profit = settlement_profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if settlement_profit != formula_profit:
+        flags.append("settlement_amount_adjusted")
+    return settlement_profit, flags
+
+
+def _candidate_to_audit_row(item: ImportTradeCandidateRead) -> Optional[RakutenAuditRowRead]:
+    if item.sell is None or item.buy is None:
+        return None
+    tt_profit, flags = _candidate_profit_and_flags(item)
+    return RakutenAuditRowRead(
+        symbol=item.symbol,
+        name=item.name,
+        sell_date=item.sell.date,
+        qty=item.sell.qty,
+        sell_price=float(item.sell.price),
+        buy_price_or_avg_cost=float(item.buy.price),
+        tt_profit_jpy=float(tt_profit),
+        correction_flags=flags,
+    )
+
+
+def _spot_long_buy_cashflow(fill: ImportFillPreviewRead) -> Decimal:
+    settlement = _fill_settlement_amount_decimal(fill)
+    if settlement is not None:
+        return settlement.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    cash = Decimal(str(fill.price)) * Decimal(fill.qty) + _fill_fee_total_decimal(fill)
+    return cash.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _spot_long_sell_cashflow(fill: ImportFillPreviewRead) -> Decimal:
+    settlement = _fill_settlement_amount_decimal(fill)
+    if settlement is not None:
+        return settlement.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    cash = Decimal(str(fill.price)) * Decimal(fill.qty) - _fill_fee_total_decimal(fill)
+    return cash.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _spot_long_broker_avg_cost(avg_cost: Decimal) -> Decimal:
+    # Rakuten の現物実現損益CSVは、平均取得価額を整数円表示へ寄せた基準で
+    # 損益を出しているケースがあるため、audit では broker 寄りの表示基準に合わせる。
+    return avg_cost.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+
+def _reconstruct_spot_long_audit_rows(candidates: list[ImportTradeCandidateRead]) -> list[RakutenAuditRowRead]:
+    events: list[tuple[str, int, int, ImportTradeCandidateRead, str, ImportFillPreviewRead]] = []
+    for item in candidates:
+        if item.trade_kind != "spot" or item.position_side != "long" or item.buy is None:
+            continue
+        events.append((item.buy.date, 0, item.source_lot_sequence, item, "buy", item.buy))
+        if item.sell is not None:
+            events.append((item.sell.date, 1, item.source_lot_sequence, item, "sell", item.sell))
+
+    events.sort(key=lambda value: (value[0], value[1], value[2], value[3].symbol))
+
+    inventory_by_symbol: dict[str, dict[str, Decimal]] = {}
+    audit_rows: list[RakutenAuditRowRead] = []
+
+    for _, _, _, item, event_type, fill in events:
+        inventory = inventory_by_symbol.setdefault(
+            item.symbol,
+            {"qty": Decimal("0"), "cost": Decimal("0.00")},
+        )
+        qty = Decimal(fill.qty)
+        if event_type == "buy":
+            inventory["qty"] += qty
+            inventory["cost"] += _spot_long_buy_cashflow(fill)
+            continue
+
+        inventory_qty = inventory["qty"]
+        inventory_cost = inventory["cost"]
+
+        if inventory_qty <= 0:
+            audit_rows.append(_candidate_to_audit_row(item) or RakutenAuditRowRead(
+                symbol=item.symbol,
+                name=item.name,
+                sell_date=fill.date,
+                qty=fill.qty,
+                sell_price=float(fill.price),
+                buy_price_or_avg_cost=0.0,
+                tt_profit_jpy=0.0,
+                correction_flags=["missing_in_tradehistory"],
+            ))
+            continue
+
+        avg_cost_exact = (inventory_cost / inventory_qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        avg_cost_display = _spot_long_broker_avg_cost(avg_cost_exact)
+        cost_basis = (avg_cost_display * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        sell_cashflow = _spot_long_sell_cashflow(fill)
+        profit = (sell_cashflow - cost_basis).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        flags: list[str] = []
+        if _fill_settlement_amount_decimal(fill) is not None or _fill_settlement_amount_decimal(item.buy) is not None:
+            flags.append("settlement_amount_adjusted")
+
+        audit_rows.append(
+            RakutenAuditRowRead(
+                symbol=item.symbol,
+                name=item.name,
+                sell_date=fill.date,
+                qty=fill.qty,
+                sell_price=float(fill.price),
+                buy_price_or_avg_cost=float(avg_cost_display),
+                tt_profit_jpy=float(profit),
+                correction_flags=flags,
+            )
+        )
+
+        inventory["qty"] = inventory_qty - qty
+        inventory["cost"] = max(
+            Decimal("0.00"),
+            (inventory_cost - (avg_cost_exact * qty)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        )
+
+    return audit_rows
 
 
 def _audit_key(symbol: str, sell_date: str, qty: int, sell_price: float, buy_price: float) -> tuple[str, str, int, str, str]:
@@ -867,21 +1108,13 @@ def audit_rakuten_tradehistory_against_realized(
     realized_content: str,
 ) -> RakutenImportAuditResponse:
     preview = parse_rakuten_domestic_csv(tradehistory_content, tradehistory_filename)
-    tt_rows = []
+    tt_rows = _reconstruct_spot_long_audit_rows(preview.candidates)
     for item in preview.candidates:
-        if item.sell is None or item.buy is None:
+        if item.trade_kind == "spot" and item.position_side == "long":
             continue
-        tt_rows.append(
-            RakutenAuditRowRead(
-                symbol=item.symbol,
-                name=item.name,
-                sell_date=item.sell.date,
-                qty=item.sell.qty,
-                sell_price=float(item.sell.price),
-                buy_price_or_avg_cost=float(item.buy.price),
-                tt_profit_jpy=_candidate_profit_jpy(item),
-            )
-        )
+        row = _candidate_to_audit_row(item)
+        if row is not None:
+            tt_rows.append(row)
 
     realized_rows = _parse_realized_pl_csv(realized_content)
     realized_by_key: dict[tuple[str, str, int, int, int], list[RakutenAuditRowRead]] = {}
@@ -919,9 +1152,20 @@ def audit_rakuten_tradehistory_against_realized(
             realized_by_loose_key[loose_key].remove(realized)
         matched_count += 1
         row.rakuten_profit_jpy = realized.rakuten_profit_jpy
-        if round(float(row.tt_profit_jpy or 0.0), 2) != round(float(realized.rakuten_profit_jpy or 0.0), 2):
-            row.reason_code = row.reason_code or "cost_breakdown_mismatch"
-            row.message = "TT と楽天で実現損益が一致していません。コスト内訳または建玉情報が不足している可能性があります。"
+        diff = Decimal(str(row.tt_profit_jpy or 0.0)) - Decimal(str(realized.rakuten_profit_jpy or 0.0))
+        if diff.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) != Decimal("0.00"):
+            if "missing_build_info_fallback_used" in row.correction_flags:
+                row.reason_code = "missing_build_info_fallback_used"
+                row.message = "建約定情報が不足していたため、既存建玉から補完して照合しましたが、なお差額が残っています。"
+            elif "settlement_amount_adjusted" in row.correction_flags:
+                row.reason_code = "settlement_amount_adjusted"
+                row.message = "受渡金額ベースで補正して照合しましたが、なお差額が残っています。"
+            elif abs(float(diff)) <= 2:
+                row.reason_code = "residual_rounding_gap"
+                row.message = "丸め差またはCSV上の微差と思われる小額差です。"
+            else:
+                row.reason_code = row.reason_code or "cost_breakdown_mismatch"
+                row.message = "TT と楽天で実現損益が一致していません。コスト内訳または建玉情報が不足している可能性があります。"
             pnl_mismatch.append(row)
 
     missing_in_tt = []
@@ -951,6 +1195,14 @@ def audit_rakuten_tradehistory_against_realized(
         )
         entry["rakuten_profit_jpy"] = Decimal(str(entry["rakuten_profit_jpy"])) + Decimal(str(row.rakuten_profit_jpy or 0.0))
 
+    symbol_reason_codes: dict[str, set[str]] = {}
+    for row in [*pnl_mismatch, *missing_in_tt, *unmatched_tt]:
+        bucket = symbol_reason_codes.setdefault(row.symbol, set())
+        if row.reason_code:
+            bucket.add(row.reason_code)
+        for flag in row.correction_flags:
+            bucket.add(flag)
+
     top_symbol_diffs = []
     for entry in symbol_diffs.values():
         tt_profit = Decimal(str(entry["tt_profit_jpy"]))
@@ -965,6 +1217,7 @@ def audit_rakuten_tradehistory_against_realized(
                 "tt_profit_jpy": float(tt_profit),
                 "rakuten_profit_jpy": float(rakuten_profit),
                 "gap_jpy": float(diff),
+                "reason_codes": sorted(symbol_reason_codes.get(str(entry["symbol"]), set())),
             }
         )
     top_symbol_diffs.sort(key=lambda item: abs(float(item["gap_jpy"])), reverse=True)

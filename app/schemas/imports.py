@@ -24,6 +24,7 @@ class ImportFillPreviewRead(BaseModel):
     fee_tax_jpy: Optional[int] = Field(default=None, ge=0)
     fee_other_jpy: Optional[int] = Field(default=None, ge=0)
     fee_total_jpy: Optional[int] = Field(default=None, ge=0)
+    settlement_amount_jpy: Optional[int] = None
 
 
 class ImportTradeCandidateRead(BaseModel):
@@ -33,6 +34,7 @@ class ImportTradeCandidateRead(BaseModel):
     symbol: str
     name: Optional[str] = None
     market: Literal["JP"] = "JP"
+    trade_kind: Literal["spot", "credit"] = "spot"
     position_side: Literal["long", "short"] = "long"
     buy: Optional[ImportFillPreviewRead] = None
     sell: Optional[ImportFillPreviewRead] = None
@@ -40,6 +42,7 @@ class ImportTradeCandidateRead(BaseModel):
     already_imported: bool = False
     is_partial_exit: bool = False
     remaining_qty_after_sell: int = Field(default=0, ge=0)
+    build_info_fallback_used: bool = False
 
 
 class ImportIssueRead(BaseModel):
@@ -88,6 +91,7 @@ class RakutenAuditRowRead(BaseModel):
     rakuten_profit_jpy: Optional[float] = None
     message: Optional[str] = None
     reason_code: Optional[str] = None
+    correction_flags: list[str] = Field(default_factory=list)
 
 
 class RakutenAuditSymbolDiffRead(BaseModel):
@@ -96,6 +100,7 @@ class RakutenAuditSymbolDiffRead(BaseModel):
     tt_profit_jpy: float
     rakuten_profit_jpy: float
     gap_jpy: float
+    reason_codes: list[str] = Field(default_factory=list)
 
 
 class RakutenImportAuditResponse(BaseModel):
