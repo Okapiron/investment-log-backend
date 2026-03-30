@@ -26,6 +26,21 @@ def _validate_market(market: str) -> None:
         raise HTTPException(status_code=422, detail="market must be JP or US")
 
 
+def _validate_position_side(position_side: str) -> str:
+    normalized = str(position_side or "").strip().lower()
+    if normalized not in {"long", "short"}:
+        raise HTTPException(status_code=422, detail="position_side must be long or short")
+    return normalized
+
+
+def _open_fill_side(position_side: str) -> str:
+    return "buy" if position_side == "long" else "sell"
+
+
+def _close_fill_side(position_side: str) -> str:
+    return "sell" if position_side == "long" else "buy"
+
+
 def _price_decimal_places(value: Decimal) -> int:
     exponent = value.as_tuple().exponent
     if exponent >= 0:
@@ -50,15 +65,15 @@ def _normalize_price_for_market(market: str, price: Decimal, side: str) -> Decim
     raise HTTPException(status_code=422, detail="market must be JP or US")
 
 
-def _normalize_fill_prices_for_market(market: str, buy: FillInput, sell: Optional[FillInput]) -> None:
-    buy.price = _normalize_price_for_market(market, buy.price, "buy")
-    if sell is not None:
-        sell.price = _normalize_price_for_market(market, sell.price, "sell")
+def _normalize_fill_prices_for_market(market: str, open_fill: FillInput, close_fill: Optional[FillInput]) -> None:
+    open_fill.price = _normalize_price_for_market(market, open_fill.price, open_fill.side)
+    if close_fill is not None:
+        close_fill.price = _normalize_price_for_market(market, close_fill.price, close_fill.side)
 
 
-def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optional[FillInput]]:
+def _extract_open_close_optional(fills: list[FillInput], position_side: str) -> Tuple[FillInput, Optional[FillInput]]:
     if len(fills) < 1 or len(fills) > 2:
-        raise HTTPException(status_code=422, detail="fills must contain buy or buy+sell")
+        raise HTTPException(status_code=422, detail="fills must contain open or open+close")
 
     by_side = {}
     for fill in fills:
@@ -66,31 +81,72 @@ def _extract_buy_sell_optional(fills: list[FillInput]) -> Tuple[FillInput, Optio
             raise HTTPException(status_code=422, detail="fills contains duplicate side")
         by_side[fill.side] = fill
 
-    buy = by_side.get("buy")
-    sell = by_side.get("sell")
+    open_side = _open_fill_side(position_side)
+    close_side = _close_fill_side(position_side)
+    open_fill = by_side.get(open_side)
+    close_fill = by_side.get(close_side)
 
-    if buy is None:
-        raise HTTPException(status_code=422, detail="fills must include buy")
-    if sell is not None:
-        if buy.qty != sell.qty:
-            raise HTTPException(status_code=422, detail="buy.qty and sell.qty must match")
+    if open_fill is None:
+        raise HTTPException(status_code=422, detail=f"fills must include {open_side}")
+    if close_fill is not None:
+        if open_fill.qty != close_fill.qty:
+            raise HTTPException(status_code=422, detail=f"{open_side}.qty and {close_side}.qty must match")
 
-        buy_date = _parse_iso_date(buy.date)
-        sell_date = _parse_iso_date(sell.date)
-        if sell_date < buy_date:
-            raise HTTPException(status_code=422, detail="sell.date must be greater than or equal to buy.date")
+        open_date = _parse_iso_date(open_fill.date)
+        close_date = _parse_iso_date(close_fill.date)
+        if close_date < open_date:
+            raise HTTPException(status_code=422, detail=f"{close_side}.date must be greater than or equal to {open_side}.date")
 
-    return buy, sell
+    return open_fill, close_fill
 
 
-def compute_profit_holding(buy: Fill, sell: Fill) -> Tuple[float, int]:
-    buy_fee = Decimal(str(buy.fee or 0))
-    sell_fee = Decimal(str(sell.fee or 0))
-    qty = Decimal(str(buy.qty))
-    profit = (Decimal(str(sell.price)) - Decimal(str(buy.price))) * qty - (buy_fee + sell_fee)
-    profit = profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    holding_days = (_parse_iso_date(sell.date) - _parse_iso_date(buy.date)).days
-    return float(profit), holding_days
+def _fill_fee_total(fill) -> Decimal:
+    explicit_total = getattr(fill, "fee_total_jpy", None)
+    if explicit_total is not None:
+        return Decimal(str(explicit_total))
+    return Decimal(str(getattr(fill, "fee", 0) or 0))
+
+
+def _fill_fee_component(fill, key: str) -> Decimal:
+    value = getattr(fill, key, None)
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
+
+
+def compute_trade_financials(open_fill: Fill, close_fill: Fill, position_side: str) -> dict[str, float]:
+    open_price = Decimal(str(open_fill.price))
+    close_price = Decimal(str(close_fill.price))
+    qty = Decimal(str(open_fill.qty))
+    open_cost = _fill_fee_total(open_fill)
+    close_cost = _fill_fee_total(close_fill)
+
+    if position_side == "short":
+        gross = (open_price - close_price) * qty
+    else:
+        gross = (close_price - open_price) * qty
+
+    net = gross - open_cost - close_cost
+    holding_days = (_parse_iso_date(close_fill.date) - _parse_iso_date(open_fill.date)).days
+    return {
+        "gross_profit_jpy": float(gross.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "net_profit_jpy": float(net.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        "holding_days": holding_days,
+        "open_leg_cost_jpy": float(open_cost),
+        "close_leg_cost_jpy": float(close_cost),
+        "total_commission_jpy": float(
+            _fill_fee_component(open_fill, "fee_commission_jpy") + _fill_fee_component(close_fill, "fee_commission_jpy")
+        ),
+        "total_tax_jpy": float(_fill_fee_component(open_fill, "fee_tax_jpy") + _fill_fee_component(close_fill, "fee_tax_jpy")),
+        "total_other_cost_jpy": float(
+            _fill_fee_component(open_fill, "fee_other_jpy") + _fill_fee_component(close_fill, "fee_other_jpy")
+        ),
+    }
+
+
+def compute_profit_holding(open_fill: Fill, close_fill: Fill, position_side: str = "long") -> Tuple[float, int]:
+    result = compute_trade_financials(open_fill, close_fill, position_side)
+    return float(result["net_profit_jpy"]), int(result["holding_days"])
 
 
 def _has_non_empty_text(value: Optional[str]) -> bool:
@@ -122,12 +178,14 @@ def review_completion_missing_items(trade: Trade) -> list[str]:
 
 def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional[str] = None) -> Trade:
     _validate_market(payload.market)
-    buy_input, sell_input = _extract_buy_sell_optional(payload.fills)
-    _normalize_fill_prices_for_market(payload.market, buy_input, sell_input)
+    position_side = _validate_position_side(payload.position_side or "long")
+    open_input, close_input = _extract_open_close_optional(payload.fills, position_side)
+    _normalize_fill_prices_for_market(payload.market, open_input, close_input)
 
     trade = Trade(
         user_id=(str(user_id).strip() or None) if user_id is not None else None,
         market=payload.market,
+        position_side=position_side,
         symbol=payload.symbol,
         name=payload.name,
         notes_buy=payload.notes_buy,
@@ -139,8 +197,8 @@ def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional
         # New trades are always pending review by design.
         review_done=False,
         reviewed_at=None,
-        opened_at=buy_input.date,
-        closed_at=sell_input.date if sell_input is not None else "",
+        opened_at=open_input.date,
+        closed_at=close_input.date if close_input is not None else "",
         created_at=_utc_now_iso(),
         updated_at=_utc_now_iso(),
     )
@@ -150,22 +208,30 @@ def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional
     db.add(
         Fill(
             trade_id=trade.id,
-            side=buy_input.side,
-            date=buy_input.date,
-            price=buy_input.price,
-            qty=buy_input.qty,
-            fee=buy_input.fee or 0,
+            side=open_input.side,
+            date=open_input.date,
+            price=open_input.price,
+            qty=open_input.qty,
+            fee=open_input.fee or open_input.fee_total_jpy or 0,
+            fee_commission_jpy=open_input.fee_commission_jpy,
+            fee_tax_jpy=open_input.fee_tax_jpy,
+            fee_other_jpy=open_input.fee_other_jpy,
+            fee_total_jpy=open_input.fee_total_jpy if open_input.fee_total_jpy is not None else open_input.fee or 0,
         )
     )
-    if sell_input is not None:
+    if close_input is not None:
         db.add(
             Fill(
                 trade_id=trade.id,
-                side=sell_input.side,
-                date=sell_input.date,
-                price=sell_input.price,
-                qty=sell_input.qty,
-                fee=sell_input.fee or 0,
+                side=close_input.side,
+                date=close_input.date,
+                price=close_input.price,
+                qty=close_input.qty,
+                fee=close_input.fee or close_input.fee_total_jpy or 0,
+                fee_commission_jpy=close_input.fee_commission_jpy,
+                fee_tax_jpy=close_input.fee_tax_jpy,
+                fee_other_jpy=close_input.fee_other_jpy,
+                fee_total_jpy=close_input.fee_total_jpy if close_input.fee_total_jpy is not None else close_input.fee or 0,
             )
         )
     return trade
@@ -176,6 +242,8 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
 
     if "market" in data and data["market"] is not None:
         _validate_market(data["market"])
+    if "position_side" in data and data["position_side"] is not None:
+        data["position_side"] = _validate_position_side(data["position_side"])
 
     fills_payload = data.pop("fills", None)
     buy_date = data.pop("buy_date", None)
@@ -191,6 +259,7 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
         setattr(trade, key, value)
 
     effective_market = data.get("market") or trade.market
+    effective_position_side = data.get("position_side") or trade.position_side or "long"
 
     if fills_payload is not None or has_trade_fill_fields:
         normalized = None
@@ -208,44 +277,53 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
             if has_all_sell:
                 normalized.append(FillInput(side="sell", date=sell_date, price=sell_price, qty=sell_qty, fee=0))
 
-        buy_input, sell_input = _extract_buy_sell_optional(normalized)
-        _normalize_fill_prices_for_market(effective_market, buy_input, sell_input)
+        open_input, close_input = _extract_open_close_optional(normalized, effective_position_side)
+        _normalize_fill_prices_for_market(effective_market, open_input, close_input)
 
         existing = {fill.side: fill for fill in trade.fills}
-        buy_fill = existing.get("buy")
-        sell_fill = existing.get("sell")
+        open_fill = existing.get(_open_fill_side(effective_position_side))
+        close_fill = existing.get(_close_fill_side(effective_position_side))
 
-        if buy_fill is None:
-            buy_fill = Fill(trade_id=trade.id, side="buy", date=buy_input.date, price=0, qty=1, fee=0)
-            db.add(buy_fill)
-        buy_fill.date = buy_input.date
-        buy_fill.price = buy_input.price
-        buy_fill.qty = buy_input.qty
-        buy_fill.fee = buy_input.fee or 0
+        for fill in list(trade.fills):
+            if fill.side not in {_open_fill_side(effective_position_side), _close_fill_side(effective_position_side)}:
+                db.delete(fill)
 
-        if sell_input is not None:
-            if sell_fill is None:
-                sell_fill = Fill(trade_id=trade.id, side="sell", date=sell_input.date, price=0, qty=1, fee=0)
-                db.add(sell_fill)
+        if open_fill is None:
+            open_fill = Fill(trade_id=trade.id, side=open_input.side, date=open_input.date, price=0, qty=1, fee=0)
+            db.add(open_fill)
+        open_fill.side = open_input.side
+        open_fill.date = open_input.date
+        open_fill.price = open_input.price
+        open_fill.qty = open_input.qty
+        open_fill.fee = open_input.fee or open_input.fee_total_jpy or 0
+        open_fill.fee_commission_jpy = open_input.fee_commission_jpy
+        open_fill.fee_tax_jpy = open_input.fee_tax_jpy
+        open_fill.fee_other_jpy = open_input.fee_other_jpy
+        open_fill.fee_total_jpy = open_input.fee_total_jpy if open_input.fee_total_jpy is not None else open_input.fee or 0
 
-            sell_fill.date = sell_input.date
-            sell_fill.price = sell_input.price
-            sell_fill.qty = sell_input.qty
-            sell_fill.fee = sell_input.fee or 0
-        elif sell_fill is not None:
-            db.delete(sell_fill)
+        if close_input is not None:
+            if close_fill is None:
+                close_fill = Fill(trade_id=trade.id, side=close_input.side, date=close_input.date, price=0, qty=1, fee=0)
+                db.add(close_fill)
 
-        trade.opened_at = buy_input.date
-        trade.closed_at = sell_input.date if sell_input is not None else ""
+            close_fill.side = close_input.side
+            close_fill.date = close_input.date
+            close_fill.price = close_input.price
+            close_fill.qty = close_input.qty
+            close_fill.fee = close_input.fee or close_input.fee_total_jpy or 0
+            close_fill.fee_commission_jpy = close_input.fee_commission_jpy
+            close_fill.fee_tax_jpy = close_input.fee_tax_jpy
+            close_fill.fee_other_jpy = close_input.fee_other_jpy
+            close_fill.fee_total_jpy = close_input.fee_total_jpy if close_input.fee_total_jpy is not None else close_input.fee or 0
+        elif close_fill is not None:
+            db.delete(close_fill)
+
+        trade.position_side = effective_position_side
+        trade.opened_at = open_input.date
+        trade.closed_at = close_input.date if close_input is not None else ""
     elif "market" in data:
-        existing = {fill.side: fill for fill in trade.fills}
-        buy_fill = existing.get("buy")
-        sell_fill = existing.get("sell")
-        if buy_fill is None:
-            raise HTTPException(status_code=422, detail="trade must include buy fill")
-        _normalize_price_for_market(effective_market, Decimal(str(buy_fill.price)), "buy")
-        if sell_fill is not None:
-            _normalize_price_for_market(effective_market, Decimal(str(sell_fill.price)), "sell")
+        for fill in trade.fills:
+            _normalize_price_for_market(effective_market, Decimal(str(fill.price)), fill.side)
 
     # Keep open positions unrated to avoid status/filter noise.
     if not str(trade.closed_at or "").strip():

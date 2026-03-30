@@ -99,12 +99,43 @@ def _ensure_trade_import_lineage_columns() -> None:
             )
 
 
+def _ensure_trade_position_side_column() -> None:
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "trades" not in inspector.get_table_names():
+            return
+
+        cols = {c.get("name") for c in inspector.get_columns("trades")}
+        if "position_side" not in cols:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN position_side VARCHAR"))
+            conn.execute(text("UPDATE trades SET position_side = 'long' WHERE position_side IS NULL OR position_side = ''"))
+
+
+def _ensure_fill_breakdown_columns() -> None:
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "fills" not in inspector.get_table_names():
+            return
+
+        cols = {c.get("name") for c in inspector.get_columns("fills")}
+        if "fee_commission_jpy" not in cols:
+            conn.execute(text("ALTER TABLE fills ADD COLUMN fee_commission_jpy INTEGER"))
+        if "fee_tax_jpy" not in cols:
+            conn.execute(text("ALTER TABLE fills ADD COLUMN fee_tax_jpy INTEGER"))
+        if "fee_other_jpy" not in cols:
+            conn.execute(text("ALTER TABLE fills ADD COLUMN fee_other_jpy INTEGER"))
+        if "fee_total_jpy" not in cols:
+            conn.execute(text("ALTER TABLE fills ADD COLUMN fee_total_jpy INTEGER"))
+
+
 def _run_startup_tasks() -> None:
     _validate_runtime_config()
     Base.metadata.create_all(bind=engine)
     _ensure_trade_user_id_column()
     _ensure_invite_code_columns()
     _ensure_trade_import_lineage_columns()
+    _ensure_trade_position_side_column()
+    _ensure_fill_breakdown_columns()
 
 
 @asynccontextmanager

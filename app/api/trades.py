@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.errors import raise_409_from_integrity
 from app.crud.trades import (
     compute_profit_holding,
+    compute_trade_financials,
     create_trade_with_fills,
     fetch_trade,
     review_completion_missing_items,
@@ -44,29 +45,74 @@ def _load_partial_exit_flags(db: Session, trade_ids: list[int]) -> dict[int, boo
     return {int(trade_id): bool(is_partial_exit) for trade_id, is_partial_exit in rows if trade_id is not None}
 
 
-def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False) -> TradeRead:
+def _load_import_metadata(db: Session, trade_ids: list[int]) -> dict[int, dict[str, object]]:
+    if not trade_ids:
+        return {}
+    rows = db.execute(
+        select(TradeImportRecord.trade_id, TradeImportRecord.is_partial_exit, TradeImportRecord.broker).where(
+            TradeImportRecord.trade_id.in_(trade_ids)
+        )
+    ).all()
+    metadata: dict[int, dict[str, object]] = {}
+    for trade_id, is_partial_exit, broker in rows:
+        if trade_id is None:
+            continue
+        key = int(trade_id)
+        current = metadata.setdefault(key, {"is_partial_exit": False, "broker": None})
+        current["is_partial_exit"] = bool(current["is_partial_exit"]) or bool(is_partial_exit)
+        if not current["broker"] and broker:
+            current["broker"] = str(broker)
+    return metadata
+
+
+def _opening_fill(fill_map: dict[str, Fill], position_side: str) -> Optional[Fill]:
+    return fill_map.get("buy" if position_side == "long" else "sell")
+
+
+def _closing_fill(fill_map: dict[str, Fill], position_side: str) -> Optional[Fill]:
+    return fill_map.get("sell" if position_side == "long" else "buy")
+
+
+def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False, import_source: Optional[str] = None) -> TradeRead:
     fills = sorted(trade.fills, key=lambda x: x.side)
     fill_map = {fill.side: fill for fill in trade.fills}
-    buy = fill_map.get("buy")
-    sell = fill_map.get("sell")
-    if buy is None:
+    position_side = str(getattr(trade, "position_side", "long") or "long")
+    opening_fill = _opening_fill(fill_map, position_side)
+    closing_fill = _closing_fill(fill_map, position_side)
+    if opening_fill is None:
         raise HTTPException(status_code=409, detail="trade fills are inconsistent")
 
-    is_open = sell is None
+    is_open = closing_fill is None
     profit_jpy = None
     profit_usd = None
+    gross_profit_jpy = None
+    net_profit_jpy = None
+    open_leg_cost_jpy = None
+    close_leg_cost_jpy = None
+    total_commission_jpy = None
+    total_tax_jpy = None
+    total_other_cost_jpy = None
     profit_currency = "JPY" if trade.market == "JP" else "USD"
     holding_days = None
-    if sell is not None:
-        profit_value, holding_days = compute_profit_holding(buy, sell)
+    if closing_fill is not None:
+        profit_value, holding_days = compute_profit_holding(opening_fill, closing_fill, position_side=position_side)
+        totals = compute_trade_financials(opening_fill, closing_fill, position_side=position_side)
         if trade.market == "JP":
             profit_jpy = profit_value
+            gross_profit_jpy = float(totals["gross_profit_jpy"])
+            net_profit_jpy = float(totals["net_profit_jpy"])
+            open_leg_cost_jpy = float(totals["open_leg_cost_jpy"])
+            close_leg_cost_jpy = float(totals["close_leg_cost_jpy"])
+            total_commission_jpy = float(totals["total_commission_jpy"])
+            total_tax_jpy = float(totals["total_tax_jpy"])
+            total_other_cost_jpy = float(totals["total_other_cost_jpy"])
         else:
             profit_usd = profit_value
 
     return TradeRead(
         id=trade.id,
         market=trade.market,
+        position_side=position_side,
         symbol=trade.symbol,
         name=trade.name,
         notes_buy=trade.notes_buy,
@@ -90,12 +136,24 @@ def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False) -> TradeRead:
                 price=fill.price,
                 qty=fill.qty,
                 fee=fill.fee or 0,
+                fee_commission_jpy=fill.fee_commission_jpy,
+                fee_tax_jpy=fill.fee_tax_jpy,
+                fee_other_jpy=fill.fee_other_jpy,
+                fee_total_jpy=fill.fee_total_jpy if fill.fee_total_jpy is not None else fill.fee or 0,
             )
             for fill in fills
         ],
         profit_jpy=profit_jpy,
         profit_usd=profit_usd,
         profit_currency=profit_currency,
+        gross_profit_jpy=gross_profit_jpy,
+        net_profit_jpy=net_profit_jpy,
+        open_leg_cost_jpy=open_leg_cost_jpy,
+        close_leg_cost_jpy=close_leg_cost_jpy,
+        total_commission_jpy=total_commission_jpy,
+        total_tax_jpy=total_tax_jpy,
+        total_other_cost_jpy=total_other_cost_jpy,
+        import_source=import_source,
         holding_days=holding_days,
         is_open=is_open,
         is_partial_exit=bool(is_partial_exit),
@@ -180,14 +238,15 @@ def _profit_value(item: TradeRead) -> Optional[float]:
 def _roi_value(item: TradeRead) -> Optional[float]:
     if _is_open_trade(item):
         return None
-    buy = None
+    opening_side = "buy" if item.position_side == "long" else "sell"
+    opening_fill = None
     for fill in item.fills:
-        if fill.side == "buy":
-            buy = fill
+        if fill.side == opening_side:
+            opening_fill = fill
             break
-    if buy is None:
+    if opening_fill is None:
         return None
-    principal = float(buy.price) * float(buy.qty) + float(buy.fee or 0)
+    principal = float(opening_fill.price) * float(opening_fill.qty) + float(opening_fill.fee_total_jpy or opening_fill.fee or 0)
     if principal <= 0:
         return None
     profit = _profit_value(item)
@@ -294,8 +353,15 @@ def list_trades(
         win_to = to
 
     trade_models = list(db.scalars(stmt).all())
-    partial_flags = _load_partial_exit_flags(db, [int(trade.id) for trade in trade_models])
-    trades = [_to_trade_read(trade, is_partial_exit=partial_flags.get(int(trade.id), False)) for trade in trade_models]
+    import_metadata = _load_import_metadata(db, [int(trade.id) for trade in trade_models])
+    trades = [
+        _to_trade_read(
+            trade,
+            is_partial_exit=bool(import_metadata.get(int(trade.id), {}).get("is_partial_exit", False)),
+            import_source=import_metadata.get(int(trade.id), {}).get("broker"),
+        )
+        for trade in trade_models
+    ]
 
     q_lower = (q or "").strip().lower()
     memo_lower = (memo or "").strip().lower()
@@ -498,8 +564,12 @@ def create_trade(
     reloaded = fetch_trade(db, trade.id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    partial_flags = _load_partial_exit_flags(db, [int(reloaded.id)])
-    return _to_trade_read(reloaded, is_partial_exit=partial_flags.get(int(reloaded.id), False))
+    import_metadata = _load_import_metadata(db, [int(reloaded.id)])
+    return _to_trade_read(
+        reloaded,
+        is_partial_exit=bool(import_metadata.get(int(reloaded.id), {}).get("is_partial_exit", False)),
+        import_source=import_metadata.get(int(reloaded.id), {}).get("broker"),
+    )
 
 
 @router.get("/{trade_id}", response_model=TradeRead)
@@ -512,8 +582,12 @@ def get_trade(
     trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    partial_flags = _load_partial_exit_flags(db, [int(trade.id)])
-    return _to_trade_read(trade, is_partial_exit=partial_flags.get(int(trade.id), False))
+    import_metadata = _load_import_metadata(db, [int(trade.id)])
+    return _to_trade_read(
+        trade,
+        is_partial_exit=bool(import_metadata.get(int(trade.id), {}).get("is_partial_exit", False)),
+        import_source=import_metadata.get(int(trade.id), {}).get("broker"),
+    )
 
 
 @router.patch("/{trade_id}", response_model=TradeRead)
@@ -553,8 +627,12 @@ def update_trade(
     reloaded = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    partial_flags = _load_partial_exit_flags(db, [int(reloaded.id)])
-    return _to_trade_read(reloaded, is_partial_exit=partial_flags.get(int(reloaded.id), False))
+    import_metadata = _load_import_metadata(db, [int(reloaded.id)])
+    return _to_trade_read(
+        reloaded,
+        is_partial_exit=bool(import_metadata.get(int(reloaded.id), {}).get("is_partial_exit", False)),
+        import_source=import_metadata.get(int(reloaded.id), {}).get("broker"),
+    )
 
 
 @router.delete("/{trade_id}", status_code=204)

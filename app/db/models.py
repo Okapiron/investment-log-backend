@@ -74,6 +74,7 @@ class Trade(Base):
     __tablename__ = "trades"
     __table_args__ = (
         CheckConstraint("market IN ('JP','US')", name="ck_trades_market"),
+        CheckConstraint("position_side IN ('long','short')", name="ck_trades_position_side"),
         CheckConstraint("(rating IS NULL) OR (rating BETWEEN 1 AND 5)", name="ck_trades_rating"),
         Index("idx_trades_user_id", "user_id"),
         Index("idx_trades_market", "market"),
@@ -85,6 +86,7 @@ class Trade(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[Optional[str]] = mapped_column(String)
     market: Mapped[str] = mapped_column(String, nullable=False)
+    position_side: Mapped[str] = mapped_column(String, nullable=False, default="long")
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
     notes_buy: Mapped[Optional[str]] = mapped_column(Text)
@@ -120,6 +122,13 @@ class Fill(Base):
         CheckConstraint("price >= 0", name="ck_fills_price_nonnegative"),
         CheckConstraint("qty >= 1", name="ck_fills_qty_positive"),
         CheckConstraint("(fee IS NULL) OR (fee >= 0)", name="ck_fills_fee_nonnegative"),
+        CheckConstraint(
+            "(fee_commission_jpy IS NULL) OR (fee_commission_jpy >= 0)",
+            name="ck_fills_fee_commission_nonnegative",
+        ),
+        CheckConstraint("(fee_tax_jpy IS NULL) OR (fee_tax_jpy >= 0)", name="ck_fills_fee_tax_nonnegative"),
+        CheckConstraint("(fee_other_jpy IS NULL) OR (fee_other_jpy >= 0)", name="ck_fills_fee_other_nonnegative"),
+        CheckConstraint("(fee_total_jpy IS NULL) OR (fee_total_jpy >= 0)", name="ck_fills_fee_total_nonnegative"),
         Index("idx_fills_trade_id", "trade_id"),
         Index("idx_fills_date", "date"),
     )
@@ -131,6 +140,10 @@ class Fill(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     qty: Mapped[int] = mapped_column(Integer, nullable=False)
     fee: Mapped[Optional[int]] = mapped_column(Integer)
+    fee_commission_jpy: Mapped[Optional[int]] = mapped_column(Integer)
+    fee_tax_jpy: Mapped[Optional[int]] = mapped_column(Integer)
+    fee_other_jpy: Mapped[Optional[int]] = mapped_column(Integer)
+    fee_total_jpy: Mapped[Optional[int]] = mapped_column(Integer)
 
     trade: Mapped[Trade] = relationship(back_populates="fills")
 

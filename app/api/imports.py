@@ -44,15 +44,21 @@ def _mark_existing_signatures(db: Session, preview: RakutenImportPreviewResponse
 
 
 def _build_trade_create(item) -> TradeCreate:
-    fills = [
-        FillInput(
-            side="buy",
-            date=item.buy.date,
-            price=Decimal(str(item.buy.price)),
-            qty=item.buy.qty,
-            fee=item.buy.fee,
+    fills = []
+    if item.buy is not None:
+        fills.append(
+            FillInput(
+                side="buy",
+                date=item.buy.date,
+                price=Decimal(str(item.buy.price)),
+                qty=item.buy.qty,
+                fee=item.buy.fee,
+                fee_commission_jpy=item.buy.fee_commission_jpy,
+                fee_tax_jpy=item.buy.fee_tax_jpy,
+                fee_other_jpy=item.buy.fee_other_jpy,
+                fee_total_jpy=item.buy.fee_total_jpy,
+            )
         )
-    ]
     if item.sell is not None:
         fills.append(
             FillInput(
@@ -61,10 +67,15 @@ def _build_trade_create(item) -> TradeCreate:
                 price=Decimal(str(item.sell.price)),
                 qty=item.sell.qty,
                 fee=item.sell.fee,
+                fee_commission_jpy=item.sell.fee_commission_jpy,
+                fee_tax_jpy=item.sell.fee_tax_jpy,
+                fee_other_jpy=item.sell.fee_other_jpy,
+                fee_total_jpy=item.sell.fee_total_jpy,
             )
         )
     return TradeCreate(
         market="JP",
+        position_side=item.position_side,
         symbol=item.symbol,
         name=item.name,
         review_done=False,
@@ -73,15 +84,21 @@ def _build_trade_create(item) -> TradeCreate:
 
 
 def _build_trade_update(item) -> TradeUpdate:
-    fills = [
-        FillInput(
-            side="buy",
-            date=item.buy.date,
-            price=Decimal(str(item.buy.price)),
-            qty=item.buy.qty,
-            fee=item.buy.fee,
+    fills = []
+    if item.buy is not None:
+        fills.append(
+            FillInput(
+                side="buy",
+                date=item.buy.date,
+                price=Decimal(str(item.buy.price)),
+                qty=item.buy.qty,
+                fee=item.buy.fee,
+                fee_commission_jpy=item.buy.fee_commission_jpy,
+                fee_tax_jpy=item.buy.fee_tax_jpy,
+                fee_other_jpy=item.buy.fee_other_jpy,
+                fee_total_jpy=item.buy.fee_total_jpy,
+            )
         )
-    ]
     if item.sell is not None:
         fills.append(
             FillInput(
@@ -90,9 +107,14 @@ def _build_trade_update(item) -> TradeUpdate:
                 price=Decimal(str(item.sell.price)),
                 qty=item.sell.qty,
                 fee=item.sell.fee,
+                fee_commission_jpy=item.sell.fee_commission_jpy,
+                fee_tax_jpy=item.sell.fee_tax_jpy,
+                fee_other_jpy=item.sell.fee_other_jpy,
+                fee_total_jpy=item.sell.fee_total_jpy,
             )
         )
     return TradeUpdate(
+        position_side=item.position_side,
         fills=fills,
         notes_sell=None,
         notes_review=None,

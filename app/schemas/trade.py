@@ -10,6 +10,10 @@ class FillInput(BaseModel):
     price: Decimal = Field(ge=0)
     qty: int = Field(ge=1)
     fee: Optional[int] = Field(default=0, ge=0)
+    fee_commission_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_tax_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_other_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_total_jpy: Optional[int] = Field(default=None, ge=0)
 
 
 class FillRead(BaseModel):
@@ -20,10 +24,15 @@ class FillRead(BaseModel):
     price: float
     qty: int
     fee: int
+    fee_commission_jpy: Optional[int] = None
+    fee_tax_jpy: Optional[int] = None
+    fee_other_jpy: Optional[int] = None
+    fee_total_jpy: Optional[int] = None
 
 
 class TradeCreate(BaseModel):
     market: str
+    position_side: str = "long"
     symbol: str = Field(min_length=1, max_length=64)
     name: Optional[str] = None
     notes_buy: Optional[str] = None
@@ -39,6 +48,7 @@ class TradeCreate(BaseModel):
 
 class TradeUpdate(BaseModel):
     market: Optional[str] = None
+    position_side: Optional[str] = None
     symbol: Optional[str] = Field(default=None, min_length=1, max_length=64)
     name: Optional[str] = None
     notes_buy: Optional[str] = None
@@ -61,6 +71,7 @@ class TradeUpdate(BaseModel):
 class TradeRead(BaseModel):
     id: int
     market: str
+    position_side: str = "long"
     symbol: str
     name: Optional[str]
     notes_buy: Optional[str]
@@ -79,6 +90,14 @@ class TradeRead(BaseModel):
     profit_jpy: Optional[float]
     profit_usd: Optional[float]
     profit_currency: str
+    gross_profit_jpy: Optional[float] = None
+    net_profit_jpy: Optional[float] = None
+    open_leg_cost_jpy: Optional[float] = None
+    close_leg_cost_jpy: Optional[float] = None
+    total_commission_jpy: Optional[float] = None
+    total_tax_jpy: Optional[float] = None
+    total_other_cost_jpy: Optional[float] = None
+    import_source: Optional[str] = None
     holding_days: Optional[int]
     is_open: bool
     is_partial_exit: bool = False

@@ -20,6 +20,10 @@ class ImportFillPreviewRead(BaseModel):
     price: float
     qty: int = Field(ge=1)
     fee: int = Field(ge=0)
+    fee_commission_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_tax_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_other_jpy: Optional[int] = Field(default=None, ge=0)
+    fee_total_jpy: Optional[int] = Field(default=None, ge=0)
 
 
 class ImportTradeCandidateRead(BaseModel):
@@ -29,7 +33,8 @@ class ImportTradeCandidateRead(BaseModel):
     symbol: str
     name: Optional[str] = None
     market: Literal["JP"] = "JP"
-    buy: ImportFillPreviewRead
+    position_side: Literal["long", "short"] = "long"
+    buy: Optional[ImportFillPreviewRead] = None
     sell: Optional[ImportFillPreviewRead] = None
     source_lines: list[int] = Field(default_factory=list)
     already_imported: bool = False
@@ -82,6 +87,15 @@ class RakutenAuditRowRead(BaseModel):
     tt_profit_jpy: Optional[float] = None
     rakuten_profit_jpy: Optional[float] = None
     message: Optional[str] = None
+    reason_code: Optional[str] = None
+
+
+class RakutenAuditSymbolDiffRead(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+    tt_profit_jpy: float
+    rakuten_profit_jpy: float
+    gap_jpy: float
 
 
 class RakutenImportAuditResponse(BaseModel):
@@ -92,4 +106,5 @@ class RakutenImportAuditResponse(BaseModel):
     missing_in_tt: list[RakutenAuditRowRead]
     pnl_mismatch: list[RakutenAuditRowRead]
     unmatched_tt: list[RakutenAuditRowRead]
+    top_symbol_diffs: list[RakutenAuditSymbolDiffRead] = Field(default_factory=list)
     reimport_hint: str

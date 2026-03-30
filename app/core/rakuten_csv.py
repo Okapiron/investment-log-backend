@@ -58,13 +58,19 @@ class _RawCsvTrade:
     symbol: str
     name: str
     side: str
+    position_side: str
     date: str
     qty: int
     price: Decimal
     fee: int
+    fee_commission_jpy: int = 0
+    fee_tax_jpy: int = 0
+    fee_other_jpy: int = 0
     build_date: Optional[str] = None
     build_price: Optional[Decimal] = None
     build_fee: int = 0
+    build_fee_commission_jpy: int = 0
+    build_fee_tax_jpy: int = 0
     is_credit_close: bool = False
 
 
@@ -73,15 +79,21 @@ class _AggregatedTrade:
     symbol: str
     name: str
     side: str
+    position_side: str
     date: str
     qty: int
     price: Decimal
     fee: int
+    fee_commission_jpy: int
+    fee_tax_jpy: int
+    fee_other_jpy: int
     lines: list[int]
     row_signatures: list[str]
     build_date: Optional[str] = None
     build_price: Optional[Decimal] = None
     build_fee: int = 0
+    build_fee_commission_jpy: int = 0
+    build_fee_tax_jpy: int = 0
     is_credit_close: bool = False
 
 
@@ -89,11 +101,15 @@ class _AggregatedTrade:
 class _OpenLot:
     symbol: str
     name: str
+    position_side: str
     date: str
     qty: int
     price: Decimal
     remaining_qty: int
     remaining_fee: int
+    remaining_fee_commission_jpy: int
+    remaining_fee_tax_jpy: int
+    remaining_fee_other_jpy: int
     lines: list[int]
     row_signatures: list[str]
     source_position_key: str
@@ -190,7 +206,15 @@ def _trade_context(row: dict[str, str], headers: dict[str, str]) -> tuple[str, s
 def _is_credit_close_row(row: dict[str, str], headers: dict[str, str]) -> bool:
     trade_type, credit_type, side_text = _trade_context(row, headers)
     combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
-    return any(marker in combined for marker in ("信用返済", "返済売", "売埋"))
+    return any(marker in combined for marker in ("信用返済", "返済売", "売埋", "返済買", "買埋"))
+
+
+def _parse_position_side(row: dict[str, str], headers: dict[str, str]) -> str:
+    trade_type, credit_type, side_text = _trade_context(row, headers)
+    combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
+    if any(marker in combined for marker in ("売建", "新規売", "返済買", "買埋")):
+        return "short"
+    return "long"
 
 
 def _is_supported_domestic_stock(row: dict[str, str], headers: dict[str, str]) -> bool:
@@ -201,9 +225,7 @@ def _is_supported_domestic_stock(row: dict[str, str], headers: dict[str, str]) -
             return False
         if "信用" in trade_type:
             combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
-            if any(marker in combined for marker in ("売建", "新規売", "返済買")):
-                return False
-            if any(marker in combined for marker in ("買建", "新規買", "返済売", "新規", "返済")):
+            if any(marker in combined for marker in ("買建", "新規買", "返済売", "売埋", "売建", "新規売", "返済買", "買埋", "新規", "返済")):
                 return True
             return bool(side_text and _parse_side(side_text))
         if "現物" in trade_type:
@@ -220,9 +242,9 @@ def _parse_row_side(row: dict[str, str], headers: dict[str, str]) -> Optional[st
         return side
 
     combined = " ".join(part for part in (credit_type, trade_type) if part)
-    if any(marker in combined for marker in ("買建", "新規買", "返済買")):
+    if any(marker in combined for marker in ("買建", "新規買", "返済買", "買埋")):
         return "buy"
-    if any(marker in combined for marker in ("売建", "新規売", "返済売")):
+    if any(marker in combined for marker in ("売建", "新規売", "返済売", "売埋")):
         return "sell"
     return None
 
@@ -233,11 +255,12 @@ def _row_signature(raw: _RawCsvTrade) -> str:
 
 
 def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
-    grouped: dict[tuple[str, str, str, str, str, bool], list[_RawCsvTrade]] = {}
+    grouped: dict[tuple[str, str, str, str, str, str, bool], list[_RawCsvTrade]] = {}
     for row in rows:
         key = (
             row.symbol,
             row.side,
+            row.position_side,
             row.date,
             row.build_date or "",
             str(row.build_price or ""),
@@ -246,10 +269,15 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
         grouped.setdefault(key, []).append(row)
 
     aggregated: list[_AggregatedTrade] = []
-    for (symbol, side, date, build_date, build_price, is_credit_close), items in grouped.items():
+    for (symbol, side, position_side, date, build_date, build_price, is_credit_close), items in grouped.items():
         total_qty = sum(item.qty for item in items)
         total_fee = sum(item.fee for item in items)
+        total_fee_commission = sum(item.fee_commission_jpy for item in items)
+        total_fee_tax = sum(item.fee_tax_jpy for item in items)
+        total_fee_other = sum(item.fee_other_jpy for item in items)
         total_build_fee = sum(item.build_fee for item in items)
+        total_build_fee_commission = sum(item.build_fee_commission_jpy for item in items)
+        total_build_fee_tax = sum(item.build_fee_tax_jpy for item in items)
         weighted_total = sum(item.price * item.qty for item in items)
         avg_price = (Decimal(weighted_total) / Decimal(total_qty)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         avg_build_price = None
@@ -266,27 +294,34 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
                 symbol=symbol,
                 name=name,
                 side=side,
+                position_side=position_side,
                 date=date,
                 qty=total_qty,
                 price=avg_price,
                 fee=total_fee,
+                fee_commission_jpy=total_fee_commission,
+                fee_tax_jpy=total_fee_tax,
+                fee_other_jpy=total_fee_other,
                 lines=lines,
                 row_signatures=row_signatures,
                 build_date=build_date or None,
                 build_price=avg_build_price if build_price else None,
                 build_fee=total_build_fee,
+                build_fee_commission_jpy=total_build_fee_commission,
+                build_fee_tax_jpy=total_build_fee_tax,
                 is_credit_close=is_credit_close,
             )
         )
-    aggregated.sort(key=lambda item: (item.symbol, item.date, 0 if item.side == "buy" else 1))
+    aggregated.sort(key=lambda item: (item.symbol, item.date, 0 if item.side in {"buy", "sell"} and item.is_credit_close is False else 1))
     return aggregated
 
 
-def _position_key(symbol: str, buy_date: str, buy_price: Decimal) -> str:
+def _position_key(symbol: str, position_side: str, buy_date: str, buy_price: Decimal) -> str:
     base = "|".join(
         [
             "rakuten",
             "JP",
+            position_side,
             symbol,
             buy_date,
             _price_text(buy_price),
@@ -345,26 +380,47 @@ def _allocate_fee_portion(total_fee: int, portion_qty: int, total_qty: int) -> i
     return max(0, min(int(total_fee), int(allocated)))
 
 
-def _find_matching_open_lot(open_buys: list[_OpenLot], sell: _AggregatedTrade) -> Optional[_OpenLot]:
-    if sell.build_date and sell.build_price:
-        for lot in open_buys:
-            if lot.date == sell.build_date and lot.price == sell.build_price:
+def _allocate_fee_breakdown(
+    *,
+    fee_total: int,
+    fee_commission_jpy: int,
+    fee_tax_jpy: int,
+    fee_other_jpy: int,
+    portion_qty: int,
+    total_qty: int,
+) -> tuple[int, int, int, int]:
+    commission = _allocate_fee_portion(fee_commission_jpy, portion_qty, total_qty)
+    tax = _allocate_fee_portion(fee_tax_jpy, portion_qty, total_qty)
+    other = _allocate_fee_portion(fee_other_jpy, portion_qty, total_qty)
+    total = _allocate_fee_portion(fee_total, portion_qty, total_qty)
+    # Prefer explicit total from CSV, but keep components internally consistent when total is short.
+    return commission, tax, other, max(total, commission + tax + other)
+
+
+def _find_matching_open_lot(open_lots: list[_OpenLot], close_trade: _AggregatedTrade) -> Optional[_OpenLot]:
+    if close_trade.build_date and close_trade.build_price:
+        for lot in open_lots:
+            if lot.date == close_trade.build_date and lot.price == close_trade.build_price:
                 return lot
-    return open_buys[0] if open_buys else None
+    return open_lots[0] if open_lots else None
 
 
-def _synthetic_open_lot_from_credit_close(sell: _AggregatedTrade) -> _OpenLot:
-    buy_date = sell.build_date or sell.date
-    buy_price = Decimal(str(sell.build_price or sell.price)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    source_key = _position_key(sell.symbol, buy_date, buy_price)
+def _synthetic_open_lot_from_credit_close(close_trade: _AggregatedTrade) -> _OpenLot:
+    open_date = close_trade.build_date or close_trade.date
+    open_price = Decimal(str(close_trade.build_price or close_trade.price)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    source_key = _position_key(close_trade.symbol, close_trade.position_side, open_date, open_price)
     return _OpenLot(
-        symbol=sell.symbol,
-        name=sell.name,
-        date=buy_date,
-        qty=sell.qty,
-        price=buy_price,
-        remaining_qty=sell.qty,
-        remaining_fee=max(0, int(sell.build_fee or 0)),
+        symbol=close_trade.symbol,
+        name=close_trade.name,
+        position_side=close_trade.position_side,
+        date=open_date,
+        qty=close_trade.qty,
+        price=open_price,
+        remaining_qty=close_trade.qty,
+        remaining_fee=max(0, int(close_trade.build_fee or 0)),
+        remaining_fee_commission_jpy=max(0, int(close_trade.build_fee_commission_jpy or 0)),
+        remaining_fee_tax_jpy=max(0, int(close_trade.build_fee_tax_jpy or 0)),
+        remaining_fee_other_jpy=0,
         lines=[],
         row_signatures=[f"synthetic:{source_key}"],
         source_position_key=source_key,
@@ -372,84 +428,139 @@ def _synthetic_open_lot_from_credit_close(sell: _AggregatedTrade) -> _OpenLot:
 
 
 def _candidate_from_buy_sell(
-    buy_lot: _OpenLot,
-    sell: _AggregatedTrade,
+    open_lot: _OpenLot,
+    close_trade: _AggregatedTrade,
     matched_qty: int,
-    buy_fee: int,
-    sell_fee: int,
+    open_fee: tuple[int, int, int, int],
+    close_fee: tuple[int, int, int, int],
     *,
     is_partial_exit: bool,
     remaining_qty_after_sell: int,
 ) -> ImportTradeCandidateRead:
-    sequence = buy_lot.next_sequence
-    buy_lot.next_sequence += 1
-    sell_preview = _AggregatedTrade(
-        symbol=sell.symbol,
-        name=sell.name,
-        side=sell.side,
-        date=sell.date,
+    sequence = open_lot.next_sequence
+    open_lot.next_sequence += 1
+    close_preview = _AggregatedTrade(
+        symbol=close_trade.symbol,
+        name=close_trade.name,
+        side=close_trade.side,
+        position_side=close_trade.position_side,
+        date=close_trade.date,
         qty=matched_qty,
-        price=sell.price,
-        fee=sell_fee,
-        lines=sell.lines,
-        row_signatures=sell.row_signatures,
+        price=close_trade.price,
+        fee=close_fee[3],
+        fee_commission_jpy=close_fee[0],
+        fee_tax_jpy=close_fee[1],
+        fee_other_jpy=close_fee[2],
+        lines=close_trade.lines,
+        row_signatures=close_trade.row_signatures,
     )
+    buy_preview = None
+    sell_preview = None
+    if open_lot.position_side == "short":
+        sell_preview = ImportFillPreviewRead(
+            date=open_lot.date,
+            price=float(open_lot.price),
+            qty=matched_qty,
+            fee=open_fee[3],
+            fee_commission_jpy=open_fee[0],
+            fee_tax_jpy=open_fee[1],
+            fee_other_jpy=open_fee[2],
+            fee_total_jpy=open_fee[3],
+        )
+        buy_preview = ImportFillPreviewRead(
+            date=close_trade.date,
+            price=float(close_trade.price),
+            qty=matched_qty,
+            fee=close_fee[3],
+            fee_commission_jpy=close_fee[0],
+            fee_tax_jpy=close_fee[1],
+            fee_other_jpy=close_fee[2],
+            fee_total_jpy=close_fee[3],
+        )
+    else:
+        buy_preview = ImportFillPreviewRead(
+            date=open_lot.date,
+            price=float(open_lot.price),
+            qty=matched_qty,
+            fee=open_fee[3],
+            fee_commission_jpy=open_fee[0],
+            fee_tax_jpy=open_fee[1],
+            fee_other_jpy=open_fee[2],
+            fee_total_jpy=open_fee[3],
+        )
+        sell_preview = ImportFillPreviewRead(
+            date=close_trade.date,
+            price=float(close_trade.price),
+            qty=matched_qty,
+            fee=close_fee[3],
+            fee_commission_jpy=close_fee[0],
+            fee_tax_jpy=close_fee[1],
+            fee_other_jpy=close_fee[2],
+            fee_total_jpy=close_fee[3],
+        )
     return ImportTradeCandidateRead(
         source_signature=_candidate_signature(
-            buy_lot.symbol,
-            buy_lot.date,
+            open_lot.symbol,
+            open_lot.date,
             matched_qty,
-            buy_lot.price,
-            buy_fee,
-            buy_lot.source_position_key,
+            open_lot.price,
+            open_fee[3],
+            open_lot.source_position_key,
             sequence,
-            buy_lot.row_signatures,
-            sell=sell_preview,
+            open_lot.row_signatures,
+            sell=close_preview,
         ),
-        source_position_key=buy_lot.source_position_key,
+        source_position_key=open_lot.source_position_key,
         source_lot_sequence=sequence,
-        symbol=buy_lot.symbol,
-        name=buy_lot.name or sell.name or buy_lot.symbol,
+        symbol=open_lot.symbol,
+        name=open_lot.name or close_trade.name or open_lot.symbol,
         market="JP",
-        buy=ImportFillPreviewRead(date=buy_lot.date, price=float(buy_lot.price), qty=matched_qty, fee=buy_fee),
-        sell=ImportFillPreviewRead(date=sell.date, price=float(sell.price), qty=matched_qty, fee=sell_fee),
-        source_lines=sorted(set([*buy_lot.lines, *sell.lines])),
+        position_side=open_lot.position_side,
+        buy=buy_preview,
+        sell=sell_preview,
+        source_lines=sorted(set([*open_lot.lines, *close_trade.lines])),
         already_imported=False,
         is_partial_exit=is_partial_exit,
         remaining_qty_after_sell=max(0, remaining_qty_after_sell),
     )
 
 
-def _candidate_from_open_lot(buy_lot: _OpenLot, *, is_partial_exit: bool) -> ImportTradeCandidateRead:
-    sequence = buy_lot.next_sequence
-    buy_lot.next_sequence += 1
+def _candidate_from_open_lot(open_lot: _OpenLot, *, is_partial_exit: bool) -> ImportTradeCandidateRead:
+    sequence = open_lot.next_sequence
+    open_lot.next_sequence += 1
+    fill_preview = ImportFillPreviewRead(
+        date=open_lot.date,
+        price=float(open_lot.price),
+        qty=open_lot.remaining_qty,
+        fee=open_lot.remaining_fee,
+        fee_commission_jpy=open_lot.remaining_fee_commission_jpy,
+        fee_tax_jpy=open_lot.remaining_fee_tax_jpy,
+        fee_other_jpy=open_lot.remaining_fee_other_jpy,
+        fee_total_jpy=open_lot.remaining_fee,
+    )
     return ImportTradeCandidateRead(
         source_signature=_candidate_signature(
-            buy_lot.symbol,
-            buy_lot.date,
-            buy_lot.remaining_qty,
-            buy_lot.price,
-            buy_lot.remaining_fee,
-            buy_lot.source_position_key,
+            open_lot.symbol,
+            open_lot.date,
+            open_lot.remaining_qty,
+            open_lot.price,
+            open_lot.remaining_fee,
+            open_lot.source_position_key,
             sequence,
-            buy_lot.row_signatures,
+            open_lot.row_signatures,
         ),
-        source_position_key=buy_lot.source_position_key,
+        source_position_key=open_lot.source_position_key,
         source_lot_sequence=sequence,
-        symbol=buy_lot.symbol,
-        name=buy_lot.name or buy_lot.symbol,
+        symbol=open_lot.symbol,
+        name=open_lot.name or open_lot.symbol,
         market="JP",
-        buy=ImportFillPreviewRead(
-            date=buy_lot.date,
-            price=float(buy_lot.price),
-            qty=buy_lot.remaining_qty,
-            fee=buy_lot.remaining_fee,
-        ),
-        sell=None,
-        source_lines=sorted(buy_lot.lines),
+        position_side=open_lot.position_side,
+        buy=fill_preview if open_lot.position_side == "long" else None,
+        sell=fill_preview if open_lot.position_side == "short" else None,
+        source_lines=sorted(open_lot.lines),
         already_imported=False,
         is_partial_exit=is_partial_exit,
-        remaining_qty_after_sell=buy_lot.remaining_qty,
+        remaining_qty_after_sell=open_lot.remaining_qty,
     )
 
 
@@ -457,82 +568,110 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
     candidates: list[ImportTradeCandidateRead] = []
     skipped: list[ImportIssueRead] = []
     errors: list[ImportIssueRead] = []
-    by_symbol: dict[str, list[_AggregatedTrade]] = {}
+    by_symbol: dict[tuple[str, str], list[_AggregatedTrade]] = {}
     for row in rows:
-        by_symbol.setdefault(row.symbol, []).append(row)
+        by_symbol.setdefault((row.symbol, row.position_side), []).append(row)
 
-    for symbol, items in by_symbol.items():
-        open_buys: list[_OpenLot] = []
-        for item in sorted(items, key=lambda row: (row.date, 0 if row.side == "buy" else 1)):
-            if item.side == "buy":
-                open_buys.append(
+    for (symbol, position_side), items in by_symbol.items():
+        open_side = "buy" if position_side == "long" else "sell"
+        open_lots: list[_OpenLot] = []
+        for item in sorted(items, key=lambda row: (row.date, 0 if row.side == open_side else 1)):
+            if item.side == open_side:
+                open_lots.append(
                     _OpenLot(
                         symbol=item.symbol,
                         name=item.name,
+                        position_side=position_side,
                         date=item.date,
                         qty=item.qty,
                         price=item.price,
                         remaining_qty=item.qty,
                         remaining_fee=item.fee,
+                        remaining_fee_commission_jpy=item.fee_commission_jpy,
+                        remaining_fee_tax_jpy=item.fee_tax_jpy,
+                        remaining_fee_other_jpy=item.fee_other_jpy,
                         lines=item.lines,
                         row_signatures=item.row_signatures,
-                        source_position_key=_position_key(item.symbol, item.date, item.price),
+                        source_position_key=_position_key(item.symbol, position_side, item.date, item.price),
                     )
                 )
                 continue
 
-            remaining_sell_qty = item.qty
-            remaining_sell_fee = item.fee
+            remaining_close_qty = item.qty
+            remaining_close_fee = item.fee
+            remaining_close_commission = item.fee_commission_jpy
+            remaining_close_tax = item.fee_tax_jpy
+            remaining_close_other = item.fee_other_jpy
 
-            while remaining_sell_qty > 0:
-                buy_lot = _find_matching_open_lot(open_buys, item)
-                if buy_lot is None:
+            while remaining_close_qty > 0:
+                open_lot = _find_matching_open_lot(open_lots, item)
+                if open_lot is None:
                     if item.is_credit_close and item.build_date and item.build_price:
-                        buy_lot = _synthetic_open_lot_from_credit_close(item)
+                        open_lot = _synthetic_open_lot_from_credit_close(item)
                     else:
                         skipped.append(
                             ImportIssueRead(
                                 line=item.lines[0] if item.lines else None,
                                 code="sell_without_buy",
-                                message=f"{symbol} の売却に対応する購入が見つかりません。",
+                                message=f"{symbol} の返済に対応する建玉が見つかりません。",
                             )
                         )
                         break
 
-                lot_qty_before = buy_lot.remaining_qty
-                sell_qty_before = remaining_sell_qty
-                matched_qty = min(lot_qty_before, sell_qty_before)
-                buy_fee_portion = _allocate_fee_portion(buy_lot.remaining_fee, matched_qty, lot_qty_before)
-                sell_fee_portion = _allocate_fee_portion(remaining_sell_fee, matched_qty, sell_qty_before)
+                lot_qty_before = open_lot.remaining_qty
+                close_qty_before = remaining_close_qty
+                matched_qty = min(lot_qty_before, close_qty_before)
+                open_fee = _allocate_fee_breakdown(
+                    fee_total=open_lot.remaining_fee,
+                    fee_commission_jpy=open_lot.remaining_fee_commission_jpy,
+                    fee_tax_jpy=open_lot.remaining_fee_tax_jpy,
+                    fee_other_jpy=open_lot.remaining_fee_other_jpy,
+                    portion_qty=matched_qty,
+                    total_qty=lot_qty_before,
+                )
+                close_fee = _allocate_fee_breakdown(
+                    fee_total=remaining_close_fee,
+                    fee_commission_jpy=remaining_close_commission,
+                    fee_tax_jpy=remaining_close_tax,
+                    fee_other_jpy=remaining_close_other,
+                    portion_qty=matched_qty,
+                    total_qty=close_qty_before,
+                )
                 remaining_after_sell = max(0, lot_qty_before - matched_qty)
-                is_partial_exit = buy_lot.qty != matched_qty or item.qty != matched_qty
+                is_partial_exit = open_lot.qty != matched_qty or item.qty != matched_qty
 
                 candidates.append(
                     _candidate_from_buy_sell(
-                        buy_lot,
+                        open_lot,
                         item,
                         matched_qty,
-                        buy_fee_portion,
-                        sell_fee_portion,
+                        open_fee,
+                        close_fee,
                         is_partial_exit=is_partial_exit,
                         remaining_qty_after_sell=remaining_after_sell,
                     )
                 )
 
-                buy_lot.remaining_qty -= matched_qty
-                buy_lot.remaining_fee = max(0, buy_lot.remaining_fee - buy_fee_portion)
-                remaining_sell_qty -= matched_qty
-                remaining_sell_fee = max(0, remaining_sell_fee - sell_fee_portion)
+                open_lot.remaining_qty -= matched_qty
+                open_lot.remaining_fee = max(0, open_lot.remaining_fee - open_fee[3])
+                open_lot.remaining_fee_commission_jpy = max(0, open_lot.remaining_fee_commission_jpy - open_fee[0])
+                open_lot.remaining_fee_tax_jpy = max(0, open_lot.remaining_fee_tax_jpy - open_fee[1])
+                open_lot.remaining_fee_other_jpy = max(0, open_lot.remaining_fee_other_jpy - open_fee[2])
+                remaining_close_qty -= matched_qty
+                remaining_close_fee = max(0, remaining_close_fee - close_fee[3])
+                remaining_close_commission = max(0, remaining_close_commission - close_fee[0])
+                remaining_close_tax = max(0, remaining_close_tax - close_fee[1])
+                remaining_close_other = max(0, remaining_close_other - close_fee[2])
 
-                if buy_lot in open_buys and buy_lot.remaining_qty <= 0:
-                    open_buys.remove(buy_lot)
+                if open_lot in open_lots and open_lot.remaining_qty <= 0:
+                    open_lots.remove(open_lot)
 
-        for buy_lot in open_buys:
-            candidates.append(_candidate_from_open_lot(buy_lot, is_partial_exit=buy_lot.remaining_qty != buy_lot.qty))
+        for open_lot in open_lots:
+            candidates.append(_candidate_from_open_lot(open_lot, is_partial_exit=open_lot.remaining_qty != open_lot.qty))
 
     candidates.sort(
         key=lambda item: (
-            item.buy.date,
+            (item.buy.date if item.buy is not None else item.sell.date if item.sell is not None else ""),
             item.symbol,
             0 if item.sell is not None else 1,
             item.sell.date if item.sell is not None else "",
@@ -588,16 +727,19 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
         symbol = _clean_text(row.get(headers["symbol"]))
         name = _clean_text(row.get(headers["name"]))
         side = _parse_row_side(row, headers)
+        position_side = _parse_position_side(row, headers)
         qty = _parse_jp_int(row.get(headers["qty"]))
         price = _parse_jp_decimal(row.get(headers["price"]))
         is_credit_close = _is_credit_close_row(row, headers)
         build_date = _parse_date(row.get(headers.get("build_date", "")))
         build_price = _parse_jp_decimal(row.get(headers.get("build_price", "")))
-        build_fee = (_parse_jp_int(row.get(headers.get("build_fee", ""))) or 0) + (
-            _parse_jp_int(row.get(headers.get("build_fee_tax", ""))) or 0
-        )
-        fee = (_parse_jp_int(row.get(headers.get("fee", ""))) or 0) + (_parse_jp_int(row.get(headers.get("other_fee", ""))) or 0)
-        fee += _parse_jp_int(row.get(headers.get("tax_fee", ""))) or 0
+        build_fee_commission = _parse_jp_int(row.get(headers.get("build_fee", ""))) or 0
+        build_fee_tax = _parse_jp_int(row.get(headers.get("build_fee_tax", ""))) or 0
+        build_fee = build_fee_commission + build_fee_tax
+        fee_commission = _parse_jp_int(row.get(headers.get("fee", ""))) or 0
+        fee_other = _parse_jp_int(row.get(headers.get("other_fee", ""))) or 0
+        fee_tax = _parse_jp_int(row.get(headers.get("tax_fee", ""))) or 0
+        fee = fee_commission + fee_other + fee_tax
 
         if not all([date, symbol, name, side]) or qty is None or price is None:
             errors.append(
@@ -624,13 +766,19 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
                 symbol=symbol,
                 name=name,
                 side=side,
+                position_side=position_side,
                 date=date,
                 qty=qty,
                 price=price,
                 fee=max(0, fee),
+                fee_commission_jpy=max(0, fee_commission),
+                fee_tax_jpy=max(0, fee_tax),
+                fee_other_jpy=max(0, fee_other),
                 build_date=build_date,
                 build_price=build_price,
                 build_fee=max(0, build_fee),
+                build_fee_commission_jpy=max(0, build_fee_commission),
+                build_fee_tax_jpy=max(0, build_fee_tax),
                 is_credit_close=is_credit_close,
             )
         )
@@ -666,6 +814,7 @@ def _parse_realized_pl_csv(content: str) -> list[RakutenAuditRowRead]:
         sell_price = _parse_jp_decimal(row.get("売却/決済単価[円]"))
         buy_price = _parse_jp_decimal(row.get("平均取得価額[円]"))
         realized_profit = _parse_jp_int(row.get("実現損益[円]"))
+        trade_label = _clean_text(row.get("取引"))
         if not sell_date or qty is None or sell_price is None or buy_price is None or realized_profit is None:
             continue
         rows.append(
@@ -677,17 +826,18 @@ def _parse_realized_pl_csv(content: str) -> list[RakutenAuditRowRead]:
                 sell_price=float(sell_price),
                 buy_price_or_avg_cost=float(buy_price),
                 rakuten_profit_jpy=float(realized_profit),
+                reason_code="unsupported_short_previously" if "買埋" in trade_label else None,
             )
         )
     return rows
 
 
 def _candidate_profit_jpy(item: ImportTradeCandidateRead) -> float:
-    if item.sell is None:
+    if item.sell is None or item.buy is None:
         return 0.0
     profit = (Decimal(str(item.sell.price)) - Decimal(str(item.buy.price))) * Decimal(item.buy.qty)
-    profit -= Decimal(item.buy.fee or 0)
-    profit -= Decimal(item.sell.fee or 0)
+    profit -= Decimal(item.buy.fee_total_jpy or item.buy.fee or 0)
+    profit -= Decimal(item.sell.fee_total_jpy or item.sell.fee or 0)
     return float(profit.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
@@ -701,6 +851,15 @@ def _audit_key(symbol: str, sell_date: str, qty: int, sell_price: float, buy_pri
     )
 
 
+def _audit_key_loose(symbol: str, sell_date: str, qty: int, sell_price: float) -> tuple[str, str, int, str]:
+    return (
+        symbol,
+        sell_date,
+        int(qty),
+        _price_text(Decimal(str(sell_price))),
+    )
+
+
 def audit_rakuten_tradehistory_against_realized(
     tradehistory_content: str,
     *,
@@ -710,7 +869,7 @@ def audit_rakuten_tradehistory_against_realized(
     preview = parse_rakuten_domestic_csv(tradehistory_content, tradehistory_filename)
     tt_rows = []
     for item in preview.candidates:
-        if item.sell is None:
+        if item.sell is None or item.buy is None:
             continue
         tt_rows.append(
             RakutenAuditRowRead(
@@ -726,9 +885,12 @@ def audit_rakuten_tradehistory_against_realized(
 
     realized_rows = _parse_realized_pl_csv(realized_content)
     realized_by_key: dict[tuple[str, str, int, int, int], list[RakutenAuditRowRead]] = {}
+    realized_by_loose_key: dict[tuple[str, str, int, str], list[RakutenAuditRowRead]] = {}
     for row in realized_rows:
         key = _audit_key(row.symbol, row.sell_date, row.qty, row.sell_price, row.buy_price_or_avg_cost)
         realized_by_key.setdefault(key, []).append(row)
+        loose_key = _audit_key_loose(row.symbol, row.sell_date, row.qty, row.sell_price)
+        realized_by_loose_key.setdefault(loose_key, []).append(row)
 
     matched_count = 0
     pnl_mismatch: list[RakutenAuditRowRead] = []
@@ -738,22 +900,74 @@ def audit_rakuten_tradehistory_against_realized(
         key = _audit_key(row.symbol, row.sell_date, row.qty, row.sell_price, row.buy_price_or_avg_cost)
         bucket = realized_by_key.get(key) or []
         if not bucket:
-            unmatched_tt.append(row)
+            loose_key = _audit_key_loose(row.symbol, row.sell_date, row.qty, row.sell_price)
+            loose_bucket = realized_by_loose_key.get(loose_key) or []
+            if loose_bucket:
+                realized = loose_bucket[0]
+                row.rakuten_profit_jpy = realized.rakuten_profit_jpy
+                row.reason_code = "buy_price_basis_mismatch"
+                row.message = "買値基準が一致していないため、楽天平均取得価額とTTの建値がずれています。"
+                pnl_mismatch.append(row)
+            else:
+                row.reason_code = "missing_in_tradehistory"
+                row.message = "TT側にはありますが、楽天実現損益とは結びつきませんでした。"
+                unmatched_tt.append(row)
             continue
         realized = bucket.pop(0)
+        loose_key = _audit_key_loose(row.symbol, row.sell_date, row.qty, row.sell_price)
+        if realized in realized_by_loose_key.get(loose_key, []):
+            realized_by_loose_key[loose_key].remove(realized)
         matched_count += 1
         row.rakuten_profit_jpy = realized.rakuten_profit_jpy
         if round(float(row.tt_profit_jpy or 0.0), 2) != round(float(realized.rakuten_profit_jpy or 0.0), 2):
-            row.message = "TT と楽天で実現損益が一致していません。"
+            row.reason_code = row.reason_code or "cost_breakdown_mismatch"
+            row.message = "TT と楽天で実現損益が一致していません。コスト内訳または建玉情報が不足している可能性があります。"
             pnl_mismatch.append(row)
 
     missing_in_tt = []
     for rows in realized_by_key.values():
-        missing_in_tt.extend(rows)
+        for row in rows:
+            if row.reason_code is None:
+                row.reason_code = "missing_in_tradehistory"
+            if row.message is None:
+                row.message = "楽天の実現損益にはありますが、tradehistory からはTT側決済を再構成できませんでした。"
+            missing_in_tt.append(row)
 
     tt_total = float(sum(Decimal(str(row.tt_profit_jpy or 0.0)) for row in tt_rows))
     rakuten_total = float(sum(Decimal(str(row.rakuten_profit_jpy or 0.0)) for row in realized_rows))
     gap = float(Decimal(str(tt_total)) - Decimal(str(rakuten_total)))
+
+    symbol_diffs: dict[str, dict[str, object]] = {}
+    for row in tt_rows:
+        entry = symbol_diffs.setdefault(
+            row.symbol,
+            {"symbol": row.symbol, "name": row.name, "tt_profit_jpy": Decimal("0"), "rakuten_profit_jpy": Decimal("0")},
+        )
+        entry["tt_profit_jpy"] = Decimal(str(entry["tt_profit_jpy"])) + Decimal(str(row.tt_profit_jpy or 0.0))
+    for row in realized_rows:
+        entry = symbol_diffs.setdefault(
+            row.symbol,
+            {"symbol": row.symbol, "name": row.name, "tt_profit_jpy": Decimal("0"), "rakuten_profit_jpy": Decimal("0")},
+        )
+        entry["rakuten_profit_jpy"] = Decimal(str(entry["rakuten_profit_jpy"])) + Decimal(str(row.rakuten_profit_jpy or 0.0))
+
+    top_symbol_diffs = []
+    for entry in symbol_diffs.values():
+        tt_profit = Decimal(str(entry["tt_profit_jpy"]))
+        rakuten_profit = Decimal(str(entry["rakuten_profit_jpy"]))
+        diff = tt_profit - rakuten_profit
+        if diff == 0:
+            continue
+        top_symbol_diffs.append(
+            {
+                "symbol": str(entry["symbol"]),
+                "name": entry["name"],
+                "tt_profit_jpy": float(tt_profit),
+                "rakuten_profit_jpy": float(rakuten_profit),
+                "gap_jpy": float(diff),
+            }
+        )
+    top_symbol_diffs.sort(key=lambda item: abs(float(item["gap_jpy"])), reverse=True)
 
     return RakutenImportAuditResponse(
         tt_total_jpy=tt_total,
@@ -763,5 +977,6 @@ def audit_rakuten_tradehistory_against_realized(
         missing_in_tt=missing_in_tt,
         pnl_mismatch=pnl_mismatch,
         unmatched_tt=unmatched_tt,
-        reimport_hint="信用返済の建玉情報を反映した再取込で差分の解消を狙えます。",
+        top_symbol_diffs=top_symbol_diffs[:10],
+        reimport_hint="差額が残る場合は tradehistory の対象期間確認と、最新ロジックでの再取込を優先してください。",
     )
