@@ -72,6 +72,13 @@ class AnalysisReviewGapRead(BaseModel):
     missing_count: int = Field(ge=0)
 
 
+class AnalysisTopImprovementRead(BaseModel):
+    key: Literal["pnl_structure", "holding_execution", "recent_change", "position_sizing"]
+    title: str
+    message: str
+    rationale: list[str]
+
+
 class AnalysisDataSufficiencyRead(BaseModel):
     enough_data: bool
     minimum_closed_trade_count: int = Field(ge=1)
@@ -81,6 +88,8 @@ class AnalysisDataSufficiencyRead(BaseModel):
 
 
 class AnalysisSummaryRead(BaseModel):
+    headline_summary: Optional[str] = None
+    top_improvement: Optional[AnalysisTopImprovementRead] = None
     summary: Optional[str] = None
     diagnoses: list[AnalysisDiagnosisCardRead]
     win_patterns: list[str]

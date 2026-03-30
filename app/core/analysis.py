@@ -23,6 +23,7 @@ from app.schemas.analysis import (
     AnalysisStatsRead,
     AnalysisSummaryRead,
     AnalysisTagStatRead,
+    AnalysisTopImprovementRead,
 )
 
 MIN_CLOSED_TRADES_FOR_AI = 5
@@ -554,13 +555,169 @@ def _build_diagnosis_cards(stats: AnalysisStatsRead, closed: list[ClosedTradeSna
     return cards
 
 
+def _top_bucket_by_loss(stats: AnalysisStatsRead) -> Optional[AnalysisHoldingBucketRead]:
+    populated = [item for item in stats.holding_buckets if item.closed_trade_count > 0 and item.avg_loss_amount is not None]
+    if not populated:
+        return None
+    return max(populated, key=lambda item: (item.avg_loss_amount or 0.0, item.closed_trade_count))
+
+
+def _top_bucket_by_net_weakness(stats: AnalysisStatsRead) -> Optional[AnalysisHoldingBucketRead]:
+    populated = [item for item in stats.holding_buckets if item.closed_trade_count > 0 and item.avg_net_profit_amount is not None]
+    if not populated:
+        return None
+    return min(populated, key=lambda item: ((item.avg_net_profit_amount or 0.0), -item.closed_trade_count))
+
+
+def _select_top_improvement(stats: AnalysisStatsRead) -> AnalysisTopImprovementRead:
+    candidates: list[tuple[float, int, AnalysisTopImprovementRead]] = []
+    currency = stats.primary_profit_currency or "JPY"
+    unit = "$" if currency == "USD" else "円"
+
+    if stats.avg_win_profit_amount is not None and stats.avg_loss_amount is not None and stats.avg_loss_amount > 0:
+        ratio = (stats.profit_loss_ratio or 0.0)
+        severity = max(0.0, 1.2 - ratio) + max(0.0, 0.5 - ((stats.win_rate_pct or 0.0) / 100.0))
+        if severity > 0:
+            candidates.append(
+                (
+                    severity,
+                    0,
+                    AnalysisTopImprovementRead(
+                        key="pnl_structure",
+                        title="大きな負けを先に抑える",
+                        message="平均損失額が重いため、大きな負けの張り方と撤退基準を先に見直してください。",
+                        rationale=[
+                            f"平均利益額 {stats.avg_win_profit_amount:.1f}{unit} / 平均損失額 {stats.avg_loss_amount:.1f}{unit}",
+                            f"利益額/損失額比 {stats.profit_loss_ratio or 0:.2f}x",
+                            f"勝率 {stats.win_rate_pct or 0:.1f}%",
+                        ],
+                    ),
+                )
+            )
+
+    if stats.avg_win_holding_days is not None and stats.avg_loss_holding_days is not None:
+        day_gap = (stats.avg_loss_holding_days or 0.0) - (stats.avg_win_holding_days or 0.0)
+        weakest_bucket = _top_bucket_by_net_weakness(stats)
+        highest_loss_bucket = _top_bucket_by_loss(stats)
+        severity = max(0.0, (day_gap - 2.0) / 5.0)
+        if weakest_bucket and weakest_bucket.avg_net_profit_amount is not None and weakest_bucket.avg_net_profit_amount < 0:
+            severity += abs(weakest_bucket.avg_net_profit_amount) / max((stats.avg_loss_amount or 1.0), 1.0)
+        if severity > 0:
+            bucket_label = weakest_bucket.label if weakest_bucket else "長めの保有帯"
+            candidates.append(
+                (
+                    severity,
+                    1,
+                    AnalysisTopImprovementRead(
+                        key="holding_execution",
+                        title="保有日数を先に見直す",
+                        message=f"{bucket_label} のトレードを優先して見直し、長引く負けを減らしてください。",
+                        rationale=[
+                            f"勝ち平均保有日数 {stats.avg_win_holding_days or 0:.1f}日 / 負け平均保有日数 {stats.avg_loss_holding_days or 0:.1f}日",
+                            f"弱い保有帯: {bucket_label}",
+                            (
+                                f"最大平均損失帯: {highest_loss_bucket.label} / {highest_loss_bucket.avg_loss_amount or 0:.1f}{unit}"
+                                if highest_loss_bucket
+                                else "保有帯の差は確認中です。"
+                            ),
+                        ],
+                    ),
+                )
+            )
+
+    if stats.recent_closed_trade_count >= 5:
+        recent_severity = 0.0
+        if stats.avg_loss_amount is not None and stats.recent_avg_loss_amount is not None and stats.avg_loss_amount > 0:
+            recent_severity += max(0.0, (stats.recent_avg_loss_amount - stats.avg_loss_amount) / stats.avg_loss_amount)
+        if stats.win_rate_pct is not None and stats.recent_win_rate_pct is not None:
+            recent_severity += max(0.0, ((stats.win_rate_pct - stats.recent_win_rate_pct) / 100.0))
+        if recent_severity > 0.25:
+            candidates.append(
+                (
+                    recent_severity,
+                    2,
+                    AnalysisTopImprovementRead(
+                        key="recent_change",
+                        title="最近の崩れを止める",
+                        message="直近の成績悪化が見えるため、最近20件の負けトレードから先に見直してください。",
+                        rationale=[
+                            f"全履歴 勝率 {stats.win_rate_pct or 0:.1f}% / 直近 {stats.recent_win_rate_pct or 0:.1f}%",
+                            f"全履歴 平均損失額 {stats.avg_loss_amount or 0:.1f}{unit} / 直近 {stats.recent_avg_loss_amount or 0:.1f}{unit}",
+                            f"全履歴 平均利益額 {stats.avg_win_profit_amount or 0:.1f}{unit} / 直近 {stats.recent_avg_win_profit_amount or 0:.1f}{unit}",
+                        ],
+                    ),
+                )
+            )
+
+    largest_loss_bucket = _top_bucket_by_loss(stats)
+    if largest_loss_bucket and largest_loss_bucket.avg_loss_amount and stats.avg_loss_amount:
+        sizing_severity = max(0.0, (largest_loss_bucket.avg_loss_amount - stats.avg_loss_amount) / stats.avg_loss_amount)
+        if sizing_severity > 0.6:
+            candidates.append(
+                (
+                    sizing_severity,
+                    3,
+                    AnalysisTopImprovementRead(
+                        key="position_sizing",
+                        title="大きく張る場面を絞る",
+                        message="損失が大きい帯が目立つため、負けやすい保有パターンでは張り方を抑えてください。",
+                        rationale=[
+                            f"最大平均損失帯: {largest_loss_bucket.label}",
+                            f"その帯の平均損失額 {largest_loss_bucket.avg_loss_amount or 0:.1f}{unit}",
+                            f"全体平均損失額 {stats.avg_loss_amount or 0:.1f}{unit}",
+                        ],
+                    ),
+                )
+            )
+
+    if not candidates:
+        return AnalysisTopImprovementRead(
+            key="holding_execution",
+            title="詳細トレードの振り返りを進める",
+            message="まずは負けトレードを2〜3件見直し、保有日数と撤退判断の癖を確認してください。",
+            rationale=[
+                f"決済済み {stats.closed_trade_count}件",
+                f"勝率 {stats.win_rate_pct or 0:.1f}%",
+                f"平均保有日数 {stats.avg_holding_days or 0:.1f}日",
+            ],
+        )
+
+    _, _, best = max(candidates, key=lambda item: (item[0], -item[1]))
+    return best
+
+
+def _build_headline_summary(stats: AnalysisStatsRead, top_improvement: AnalysisTopImprovementRead) -> str:
+    if top_improvement.key == "pnl_structure":
+        if (stats.profit_loss_ratio or 0) >= 1:
+            return "利幅では補えている一方で、大きな負けを抑えるとさらに安定しやすいスタイルです。"
+        return "大きな負けが収支を圧迫しやすく、まず損失側の歪みを整えたいスタイルです。"
+    if top_improvement.key == "holding_execution":
+        return "保有を引っ張った場面で崩れやすく、保有日数のコントロールが鍵になりやすいスタイルです。"
+    if top_improvement.key == "recent_change":
+        return "全体の型はある一方で、直近の執行に崩れが出ていないかを先に点検したい状態です。"
+    if top_improvement.key == "position_sizing":
+        return "張り方の強弱が収支に影響しやすく、負けやすい場面でのサイズ管理が鍵になるスタイルです。"
+    return "全体像は見え始めているので、まずは最も強い歪みから1点だけ直す段階です。"
+
+
 def _build_rule_based_sections(
     stats: AnalysisStatsRead, closed: list[ClosedTradeSnapshot]
-) -> tuple[str, list[AnalysisDiagnosisCardRead], list[str], list[str], list[str], list[AnalysisReviewGapRead]]:
+) -> tuple[
+    str,
+    str,
+    AnalysisTopImprovementRead,
+    list[AnalysisDiagnosisCardRead],
+    list[str],
+    list[str],
+    list[str],
+    list[AnalysisReviewGapRead],
+]:
     wins = [item for item in closed if item.profit_value > 0]
     losses = [item for item in closed if item.profit_value < 0]
     diagnoses = _build_diagnosis_cards(stats, closed)
     review_gaps = _review_gap_reads(closed)
+    top_improvement = _select_top_improvement(stats)
+    headline_summary = _build_headline_summary(stats, top_improvement)
     gap_summary = " / ".join(f"{item.label} {item.missing_count}件" for item in review_gaps[:3]) or "補助情報の欠損は少なめです"
     summary = (
         f"決済済みトレードは {stats.closed_trade_count} 件です。"
@@ -598,7 +755,16 @@ def _build_rule_based_sections(
     if review_gaps:
         actions.append(f"補助情報では {review_gaps[0].label} を埋めると、次の分析精度が上がります。")
 
-    return summary, diagnoses[:3], win_patterns[:3], loss_patterns[:3], actions[:3], review_gaps[:5]
+    return (
+        headline_summary,
+        summary,
+        top_improvement,
+        diagnoses[:3],
+        win_patterns[:3],
+        loss_patterns[:3],
+        actions[:3],
+        review_gaps[:5],
+    )
 
 
 def _extract_response_text(payload: dict) -> str:
@@ -739,10 +905,21 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         if cached and cached[0] > now_ts:
             return cached[1]
 
-    rule_summary, rule_diagnoses, rule_win_patterns, rule_loss_patterns, rule_actions, rule_review_gaps = _build_rule_based_sections(stats, closed)
+    (
+        rule_headline_summary,
+        rule_summary,
+        rule_top_improvement,
+        rule_diagnoses,
+        rule_win_patterns,
+        rule_loss_patterns,
+        rule_actions,
+        rule_review_gaps,
+    ) = _build_rule_based_sections(stats, closed)
 
     if not enough_data:
         result = AnalysisSummaryRead(
+            headline_summary=rule_headline_summary,
+            top_improvement=rule_top_improvement,
             summary=rule_summary,
             diagnoses=rule_diagnoses,
             win_patterns=rule_win_patterns,
@@ -762,6 +939,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
     elif _mock_enabled():
         summary, win_patterns, loss_patterns, actions = _build_mock_sections(stats)
         result = AnalysisSummaryRead(
+            headline_summary=rule_headline_summary,
+            top_improvement=rule_top_improvement,
             summary=summary,
             diagnoses=rule_diagnoses,
             win_patterns=win_patterns,
@@ -780,6 +959,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         )
     elif not _llm_enabled():
         result = AnalysisSummaryRead(
+            headline_summary=rule_headline_summary,
+            top_improvement=rule_top_improvement,
             summary=rule_summary,
             diagnoses=rule_diagnoses,
             win_patterns=rule_win_patterns,
@@ -800,6 +981,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         try:
             summary, win_patterns, loss_patterns, actions, _ = _generate_llm_sections(stats, closed, user_id or "public")
             result = AnalysisSummaryRead(
+                headline_summary=rule_headline_summary,
+                top_improvement=rule_top_improvement,
                 summary=summary,
                 diagnoses=rule_diagnoses,
                 win_patterns=win_patterns,
@@ -818,6 +1001,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
             )
         except RuntimeError:
             result = AnalysisSummaryRead(
+                headline_summary=rule_headline_summary,
+                top_improvement=rule_top_improvement,
                 summary=rule_summary,
                 diagnoses=rule_diagnoses,
                 win_patterns=rule_win_patterns,

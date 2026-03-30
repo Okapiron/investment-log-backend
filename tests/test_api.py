@@ -170,6 +170,8 @@ def test_analysis_summary_insufficient_data_returns_stats_only(client):
     res = client.get("/api/v1/analysis/summary")
     assert res.status_code == 200
     body = res.json()
+    assert body["headline_summary"] is not None
+    assert body["top_improvement"] is not None
     assert body["summary"] is not None
     assert len(body["win_patterns"]) >= 1
     assert len(body["loss_patterns"]) >= 1
@@ -222,6 +224,8 @@ def test_analysis_summary_generates_llm_sections_when_configured(client, monkeyp
         res = client.get("/api/v1/analysis/summary")
         assert res.status_code == 200
         body = res.json()
+        assert body["headline_summary"] is not None
+        assert body["top_improvement"] is not None
         assert body["summary"].startswith("全体として利確")
         assert body["data_sufficiency"]["enough_data"] is True
         assert body["data_sufficiency"]["llm_status"] == "generated"
@@ -254,6 +258,8 @@ def test_analysis_summary_uses_mock_mode_without_openai_key(client):
         res = client.get("/api/v1/analysis/summary")
         assert res.status_code == 200
         body = res.json()
+        assert body["headline_summary"] is not None
+        assert body["top_improvement"] is not None
         assert body["data_sufficiency"]["llm_status"] == "mock"
         assert "テスト用のAI要約" in body["summary"]
         assert len(body["diagnoses"]) == 3
@@ -288,6 +294,8 @@ def test_analysis_summary_falls_back_to_stats_when_llm_fails(client, monkeypatch
         res = client.get("/api/v1/analysis/summary")
         assert res.status_code == 200
         body = res.json()
+        assert body["headline_summary"] is not None
+        assert body["top_improvement"] is not None
         assert body["summary"] is not None
         assert len(body["diagnoses"]) == 3
         assert len(body["actions"]) >= 1
@@ -314,6 +322,8 @@ def test_analysis_summary_uses_rule_based_sections_without_openai(client):
     res = client.get("/api/v1/analysis/summary")
     assert res.status_code == 200
     body = res.json()
+    assert body["headline_summary"] is not None
+    assert body["top_improvement"] is not None
     assert body["data_sufficiency"]["llm_status"] == "rule_based"
     assert body["summary"] is not None
     assert len(body["diagnoses"]) == 3
@@ -324,6 +334,103 @@ def test_analysis_summary_uses_rule_based_sections_without_openai(client):
     assert body["stats"]["avg_loss_amount"] is not None
     assert body["stats"]["recent_closed_trade_count"] == 5
     assert len(body["stats"]["holding_buckets"]) == 4
+
+
+def test_analysis_summary_selects_top_improvement_for_heaviest_losses(client):
+    for idx in range(3):
+        _create_trade(
+            client,
+            {
+                "market": "JP",
+                "symbol": f"LW{idx}",
+                "fills": [
+                    {"side": "buy", "date": f"2026-07-0{idx + 1}", "price": 1000, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-07-1{idx + 1}", "price": 1100, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+    for idx in range(3):
+        _create_trade(
+            client,
+            {
+                "market": "JP",
+                "symbol": f"LL{idx}",
+                "fills": [
+                    {"side": "buy", "date": f"2026-08-0{idx + 1}", "price": 1000, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": f"2026-08-1{idx + 1}", "price": 200, "qty": 1, "fee": 0},
+                ],
+            },
+        )
+
+    res = client.get("/api/v1/analysis/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["top_improvement"]["key"] == "pnl_structure"
+    assert "大きな負け" in body["top_improvement"]["message"]
+
+
+def test_analysis_summary_selects_top_improvement_for_holding_distortion(client):
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "HW1",
+            "fills": [
+                {"side": "buy", "date": "2026-09-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-09-03", "price": 1200, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "HL1",
+            "fills": [
+                {"side": "buy", "date": "2026-09-01", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-10-10", "price": 700, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "HL2",
+            "fills": [
+                {"side": "buy", "date": "2026-09-02", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-10-15", "price": 650, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "HL3",
+            "fills": [
+                {"side": "buy", "date": "2026-09-03", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-10-20", "price": 680, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+    _create_trade(
+        client,
+        {
+            "market": "JP",
+            "symbol": "HW2",
+            "fills": [
+                {"side": "buy", "date": "2026-09-04", "price": 1000, "qty": 1, "fee": 0},
+                {"side": "sell", "date": "2026-09-06", "price": 1180, "qty": 1, "fee": 0},
+            ],
+        },
+    )
+
+    res = client.get("/api/v1/analysis/summary")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["top_improvement"]["key"] == "holding_execution"
+    assert "保有" in body["headline_summary"]
 
 
 def test_trades_requires_auth_when_enabled(client):
