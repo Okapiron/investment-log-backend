@@ -41,6 +41,7 @@ def test_openapi(client):
     assert "/api/v1/snapshots/copy-latest" in data["paths"]
     assert "/api/v1/trades" in data["paths"]
     assert "/api/v1/imports/rakuten-jp/preview" in data["paths"]
+    assert "/api/v1/imports/rakuten-jp/audit" in data["paths"]
     assert "/api/v1/analysis/summary" in data["paths"]
 
 
@@ -1690,6 +1691,104 @@ def test_rakuten_import_preview_supports_actual_rakuten_header_labels(client):
     assert body["error_count"] == 0
     assert body["candidates"][0]["symbol"] == "5801"
     assert body["candidates"][0]["sell"]["fee"] == 237
+
+
+def test_rakuten_import_preview_credit_close_uses_build_info_without_buy_row(client):
+    csv_content = """約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］,建手数料［円］,建手数料消費税［円］
+2026/3/18,2026/3/21,2644,ＧＸ半導体日株,東証,特定,信用返済,売埋,一般,無期限,30,3213.0,0,100,1418,源徴あり,-858,2026/1/22,3191.0,0,0
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_credit_close_only.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 1
+    assert body["skipped_count"] == 0
+    assert body["error_count"] == 0
+    item = body["candidates"][0]
+    assert item["symbol"] == "2644"
+    assert item["buy"]["date"] == "2026-01-22"
+    assert item["buy"]["price"] == 3191
+    assert item["sell"]["price"] == 3213
+    assert item["sell"]["fee"] == 1518
+
+
+def test_rakuten_import_audit_matches_realized_pl(client):
+    tradehistory_csv = """約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］,建手数料［円］,建手数料消費税［円］
+2026/3/18,2026/3/21,2644,ＧＸ半導体日株,東証,特定,信用返済,売埋,一般,無期限,30,3213.0,0,100,1418,源徴あり,-858,2026/1/22,3191.0,0,0
+"""
+    realized_csv = """約定日,受渡日,銘柄コード,銘柄名,口座,信用区分,取引,数量[株],売却/決済単価[円],売却/決済額[円],平均取得価額[円],実現損益[円]
+2026/3/18,2026/3/21,2644,ＧＸ半導体日株,特定,一般,売埋,30,3213.0,96390,3191.00,-858
+"""
+
+    audit = client.post(
+        "/api/v1/imports/rakuten-jp/audit",
+        json={
+            "tradehistory_filename": "tradehistory.csv",
+            "tradehistory_content": tradehistory_csv,
+            "realized_filename": "realized.csv",
+            "realized_content": realized_csv,
+        },
+    )
+    assert audit.status_code == 200
+    body = audit.json()
+    assert body["matched_count"] == 1
+    assert body["gap_jpy"] == 0
+    assert body["missing_in_tt"] == []
+    assert body["pnl_mismatch"] == []
+    assert body["unmatched_tt"] == []
+
+
+def test_rakuten_import_commit_preserves_decimal_credit_prices(client):
+    tradehistory_csv = """約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］,建手数料［円］,建手数料消費税［円］
+2026/3/18,2026/3/21,8002,丸紅,東証,特定,信用返済,売埋,一般,無期限,100,5849.0,0,0,1790,源徴あり,-29060,2026/2/12,6122.7,0,0
+"""
+    realized_csv = """約定日,受渡日,銘柄コード,銘柄名,口座,信用区分,取引,数量[株],売却/決済単価[円],売却/決済額[円],平均取得価額[円],実現損益[円]
+2026/3/18,2026/3/21,8002,丸紅,特定,一般,売埋,100,5849.0,584900,6122.70,-29160
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "tradehistory.csv", "content": tradehistory_csv},
+    )
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["candidate_count"] == 1
+    assert preview_body["candidates"][0]["buy"]["price"] == 6122.7
+    assert preview_body["candidates"][0]["sell"]["price"] == 5849.0
+
+    commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "tradehistory.csv", "items": preview_body["candidates"]},
+    )
+    assert commit.status_code == 200
+    assert commit.json()["created_count"] == 1
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    item = trades.json()["items"][0]
+    buy = next(fill for fill in item["fills"] if fill["side"] == "buy")
+    sell = next(fill for fill in item["fills"] if fill["side"] == "sell")
+    assert buy["price"] == 6122.7
+    assert sell["price"] == 5849.0
+    assert item["profit_jpy"] == -29160.0
+
+    audit = client.post(
+        "/api/v1/imports/rakuten-jp/audit",
+        json={
+            "tradehistory_filename": "tradehistory.csv",
+            "tradehistory_content": tradehistory_csv,
+            "realized_filename": "realized.csv",
+            "realized_content": realized_csv,
+        },
+    )
+    assert audit.status_code == 200
+    body = audit.json()
+    assert body["matched_count"] == 1
+    assert body["gap_jpy"] == 0
+    assert body["pnl_mismatch"] == []
 
 
 def test_rakuten_import_preview_skips_margin_short_rows(client):

@@ -38,9 +38,9 @@ def _normalize_price_for_market(market: str, price: Decimal, side: str) -> Decim
         raise HTTPException(status_code=422, detail=f"{side}.price must be greater than 0")
 
     if market == "JP":
-        if _price_decimal_places(price) > 0:
-            raise HTTPException(status_code=422, detail=f"{side}.price must be an integer for JP market")
-        return price.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        if _price_decimal_places(price) > 2:
+            raise HTTPException(status_code=422, detail=f"{side}.price must allow up to 2 decimal places for JP market")
+        return price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     if market == "US":
         if _price_decimal_places(price) > 2:

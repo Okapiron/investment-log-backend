@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -6,11 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
-from app.core.rakuten_csv import parse_rakuten_domestic_csv
+from app.core.rakuten_csv import audit_rakuten_tradehistory_against_realized, parse_rakuten_domestic_csv
 from app.crud.trades import create_trade_with_fills, fetch_trade, update_trade_with_fills
 from app.db.models import TradeImportRecord
 from app.schemas.imports import (
     ImportIssueRead,
+    RakutenImportAuditRequest,
+    RakutenImportAuditResponse,
     RakutenImportCommitRequest,
     RakutenImportCommitResponse,
     RakutenImportPreviewRequest,
@@ -45,7 +48,7 @@ def _build_trade_create(item) -> TradeCreate:
         FillInput(
             side="buy",
             date=item.buy.date,
-            price=int(item.buy.price),
+            price=Decimal(str(item.buy.price)),
             qty=item.buy.qty,
             fee=item.buy.fee,
         )
@@ -55,7 +58,7 @@ def _build_trade_create(item) -> TradeCreate:
             FillInput(
                 side="sell",
                 date=item.sell.date,
-                price=int(item.sell.price),
+                price=Decimal(str(item.sell.price)),
                 qty=item.sell.qty,
                 fee=item.sell.fee,
             )
@@ -74,7 +77,7 @@ def _build_trade_update(item) -> TradeUpdate:
         FillInput(
             side="buy",
             date=item.buy.date,
-            price=int(item.buy.price),
+            price=Decimal(str(item.buy.price)),
             qty=item.buy.qty,
             fee=item.buy.fee,
         )
@@ -84,7 +87,7 @@ def _build_trade_update(item) -> TradeUpdate:
             FillInput(
                 side="sell",
                 date=item.sell.date,
-                price=int(item.sell.price),
+                price=Decimal(str(item.sell.price)),
                 qty=item.sell.qty,
                 fee=item.sell.fee,
             )
@@ -121,6 +124,19 @@ def preview_rakuten_jp_import(
     _scoped_user_id(claims)
     preview = parse_rakuten_domestic_csv(payload.content, payload.filename)
     return _mark_existing_signatures(db, preview)
+
+
+@router.post("/rakuten-jp/audit", response_model=RakutenImportAuditResponse)
+def audit_rakuten_jp_import(
+    payload: RakutenImportAuditRequest,
+    claims: dict = Depends(require_invited_auth),
+):
+    _scoped_user_id(claims)
+    return audit_rakuten_tradehistory_against_realized(
+        payload.tradehistory_content,
+        tradehistory_filename=payload.tradehistory_filename,
+        realized_content=payload.realized_content,
+    )
 
 
 @router.post("/rakuten-jp/commit", response_model=RakutenImportCommitResponse)

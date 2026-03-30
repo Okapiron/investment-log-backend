@@ -8,6 +8,13 @@ class RakutenImportPreviewRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
+class RakutenImportAuditRequest(BaseModel):
+    tradehistory_filename: Optional[str] = None
+    tradehistory_content: str = Field(min_length=1)
+    realized_filename: Optional[str] = None
+    realized_content: str = Field(min_length=1)
+
+
 class ImportFillPreviewRead(BaseModel):
     date: str
     price: float
@@ -63,3 +70,26 @@ class RakutenImportCommitResponse(BaseModel):
     updated_trade_ids: list[int] = Field(default_factory=list)
     skipped: list[ImportIssueRead]
     errors: list[ImportIssueRead]
+
+
+class RakutenAuditRowRead(BaseModel):
+    symbol: str
+    name: Optional[str] = None
+    sell_date: str
+    qty: int = Field(ge=1)
+    sell_price: float
+    buy_price_or_avg_cost: float
+    tt_profit_jpy: Optional[float] = None
+    rakuten_profit_jpy: Optional[float] = None
+    message: Optional[str] = None
+
+
+class RakutenImportAuditResponse(BaseModel):
+    tt_total_jpy: float
+    rakuten_total_jpy: float
+    gap_jpy: float
+    matched_count: int = Field(ge=0)
+    missing_in_tt: list[RakutenAuditRowRead]
+    pnl_mismatch: list[RakutenAuditRowRead]
+    unmatched_tt: list[RakutenAuditRowRead]
+    reimport_hint: str
