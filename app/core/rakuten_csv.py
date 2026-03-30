@@ -19,11 +19,12 @@ _HEADER_ALIASES = {
     "date": {"約定日", "受渡日", "取引日"},
     "symbol": {"銘柄コード", "コード", "銘柄ｺｰﾄﾞ"},
     "name": {"銘柄", "銘柄名", "銘柄名称"},
-    "side": {"売買", "取引", "売買区分"},
-    "qty": {"約定数量", "数量", "株数", "約定株数"},
+    "side": {"売買", "売買区分"},
+    "qty": {"約定数量", "数量", "株数", "約定株数", "約定数"},
     "price": {"約定単価", "単価", "価格", "約定価格"},
     "fee": {"手数料", "諸費用", "手数料等", "手数料・諸費用", "委託手数料"},
-    "trade_type": {"取引区分", "商品", "現物信用", "口座区分", "取引種別"},
+    "trade_type": {"取引区分", "商品", "現物信用", "口座区分", "取引種別", "取引"},
+    "credit_type": {"信用区分", "新規返済", "建区分", "新規建区分", "信用新規建区分"},
     "market": {"市場", "市場名"},
 }
 
@@ -119,23 +120,49 @@ def _parse_side(value: object) -> Optional[str]:
     return None
 
 
+def _row_value(row: dict[str, str], headers: dict[str, str], key: str) -> str:
+    return _clean_text(row.get(headers.get(key, ""), ""))
+
+
+def _trade_context(row: dict[str, str], headers: dict[str, str]) -> tuple[str, str, str]:
+    trade_type = _row_value(row, headers, "trade_type")
+    credit_type = _row_value(row, headers, "credit_type")
+    side_text = _row_value(row, headers, "side")
+    return trade_type, credit_type, side_text
+
+
 def _is_supported_domestic_stock(row: dict[str, str], headers: dict[str, str]) -> bool:
-    trade_type = _clean_text(row.get(headers.get("trade_type", ""), ""))
+    trade_type, credit_type, side_text = _trade_context(row, headers)
     market = _clean_text(row.get(headers.get("market", ""), ""))
     if trade_type:
         if "先物" in trade_type or "オプション" in trade_type or "投信" in trade_type:
             return False
         if "信用" in trade_type:
-            if any(marker in trade_type for marker in ("売建", "新規売", "返済買")):
+            combined = " ".join(part for part in (trade_type, credit_type, side_text) if part)
+            if any(marker in combined for marker in ("売建", "新規売", "返済買")):
                 return False
-            if any(marker in trade_type for marker in ("買建", "新規買", "返済売")):
+            if any(marker in combined for marker in ("買建", "新規買", "返済売", "新規", "返済")):
                 return True
-            return False
+            return bool(side_text and _parse_side(side_text))
         if "現物" in trade_type:
             return True
     if market and ("米" in market or "NASDAQ" in market.upper() or "NYSE" in market.upper()):
         return False
     return True
+
+
+def _parse_row_side(row: dict[str, str], headers: dict[str, str]) -> Optional[str]:
+    trade_type, credit_type, side_text = _trade_context(row, headers)
+    side = _parse_side(side_text)
+    if side:
+        return side
+
+    combined = " ".join(part for part in (credit_type, trade_type) if part)
+    if any(marker in combined for marker in ("買建", "新規買", "返済買")):
+        return "buy"
+    if any(marker in combined for marker in ("売建", "新規売", "返済売")):
+        return "sell"
+    return None
 
 
 def _row_signature(raw: _RawCsvTrade) -> str:
@@ -306,7 +333,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
         date = _parse_date(row.get(headers["date"]))
         symbol = _clean_text(row.get(headers["symbol"]))
         name = _clean_text(row.get(headers["name"]))
-        side = _parse_side(row.get(headers["side"]))
+        side = _parse_row_side(row, headers)
         qty = _parse_jp_int(row.get(headers["qty"]))
         price = _parse_jp_int(row.get(headers["price"]))
         fee = _parse_jp_int(row.get(headers.get("fee", ""))) or 0

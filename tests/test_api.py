@@ -1440,6 +1440,24 @@ def test_rakuten_import_preview_and_commit_support_margin_long(client):
     assert commit_body["error_count"] == 0
 
 
+def test_rakuten_import_preview_supports_split_credit_columns(client):
+    csv_content = """約定日,銘柄コード,銘柄,取引,売買,信用区分,約定数量,約定単価,手数料
+2026/03/01,7203,トヨタ自動車,信用,買,新規,100,2500,275
+2026/03/10,7203,トヨタ自動車,信用,売,返済,100,2600,275
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_margin_split_columns.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 1
+    assert body["skipped_count"] == 0
+    assert body["error_count"] == 0
+    assert body["candidates"][0]["symbol"] == "7203"
+
+
 def test_rakuten_import_preview_skips_margin_short_rows(client):
     csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
 2026/03/01,7203,トヨタ自動車,売,100,2500,275,信用新規売
