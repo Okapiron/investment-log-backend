@@ -1458,6 +1458,25 @@ def test_rakuten_import_preview_supports_split_credit_columns(client):
     assert body["candidates"][0]["symbol"] == "7203"
 
 
+def test_rakuten_import_preview_supports_actual_rakuten_header_labels(client):
+    csv_content = """約定日,受渡日,銘柄コード,銘柄名,市場名称,口座区分,取引区分,売買区分,信用区分,弁済期限,数量［株］,単価［円］,手数料［円］,税金等［円］,諸費用［円］,税区分,受渡金額［円］,建約定日,建単価［円］,建手数料［円］,建手数料消費税［円］,金利（支払）〔円〕,金利（受取）〔円〕,逆日歩／特別空売り料（支払）〔円〕,逆日歩（受取）〔円〕,貸株料,事務管理費〔円〕（税抜）,名義書換料〔円〕（税抜）
+2026/2/9,2026/2/12,5801,古河電工,JAX,特定,信用新規,買建,一般,無期限,100,15500.0,0,0,0,-,-,-,0.0,0,0,0,0,0,0,0,0,0
+2026/2/10,2026/2/13,5801,古河電工,東証,特定,信用返済,売埋,一般,無期限,100,21400.0,0,0,237,源徴あり,589763,2026/2/9,15500.0,0,0,237,0,0,0,0,0,0
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_actual_headers.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 1
+    assert body["skipped_count"] == 0
+    assert body["error_count"] == 0
+    assert body["candidates"][0]["symbol"] == "5801"
+    assert body["candidates"][0]["sell"]["fee"] == 237
+
+
 def test_rakuten_import_preview_skips_margin_short_rows(client):
     csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
 2026/03/01,7203,トヨタ自動車,売,100,2500,275,信用新規売
