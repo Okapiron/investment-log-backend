@@ -59,6 +59,17 @@ def _candidate_import_state(item) -> str:
     return "closed_round_trip" if _candidate_close_fill(item) is not None else "open_remaining"
 
 
+def _candidate_fill_price(fill) -> Decimal:
+    return Decimal(str(getattr(fill, "price", 0) or 0))
+
+
+def _candidate_fill_fee_total(fill) -> int:
+    fee_total = getattr(fill, "fee_total_jpy", None)
+    if fee_total is not None:
+        return int(fee_total)
+    return int(getattr(fill, "fee", 0) or 0)
+
+
 def _record_query(stmt, *, user_id: Optional[str], join_trade: bool = False):
     if user_id is None:
         return stmt
@@ -87,6 +98,11 @@ def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -
     if record is not None:
         return record
 
+    open_fill = _candidate_open_fill(item)
+    close_fill = _candidate_close_fill(item)
+    if open_fill is None:
+        return None
+
     open_fill_alias = aliased(Fill)
     open_side = "buy" if item.position_side == "long" else "sell"
     fallback = (
@@ -102,10 +118,27 @@ def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -
             Trade.position_side == item.position_side,
             Trade.opened_at == _candidate_open_date(item),
             Trade.closed_at == _candidate_close_date(item),
-            open_fill_alias.qty == _candidate_qty(item),
+            open_fill_alias.date == open_fill.date,
+            open_fill_alias.qty == open_fill.qty,
+            open_fill_alias.price == _candidate_fill_price(open_fill),
+            open_fill_alias.fee_total_jpy == _candidate_fill_fee_total(open_fill),
         )
-        .order_by(TradeImportRecord.id.asc())
     )
+
+    if close_fill is not None:
+        close_fill_alias = aliased(Fill)
+        close_side = "sell" if item.position_side == "long" else "buy"
+        fallback = fallback.join(
+            close_fill_alias,
+            and_(close_fill_alias.trade_id == Trade.id, close_fill_alias.side == close_side),
+        ).where(
+            close_fill_alias.date == close_fill.date,
+            close_fill_alias.qty == close_fill.qty,
+            close_fill_alias.price == _candidate_fill_price(close_fill),
+            close_fill_alias.fee_total_jpy == _candidate_fill_fee_total(close_fill),
+        )
+
+    fallback = fallback.order_by(TradeImportRecord.id.asc())
     if user_id is not None:
         fallback = fallback.where(Trade.user_id == user_id)
     return db.scalar(fallback)

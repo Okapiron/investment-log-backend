@@ -510,6 +510,17 @@ def _insert_invite(code: str, days: int = 7) -> None:
         db.commit()
 
 
+def _rewrite_import_record_lineage(trade_id: int, *, signature: str, position_key: str, lot_sequence: int) -> None:
+    session_local = app.state.testing_session_local
+    with session_local() as db:
+        record = db.scalar(select(TradeImportRecord).where(TradeImportRecord.trade_id == trade_id))
+        assert record is not None
+        record.source_signature = signature
+        record.source_position_key = position_key
+        record.source_lot_sequence = lot_sequence
+        db.commit()
+
+
 def test_trades_require_valid_invite_code_when_invite_required(client):
     settings.auth_enabled = True
     settings.invite_code_required = True
@@ -1716,6 +1727,199 @@ def test_rakuten_import_reimport_closes_existing_open_remaining(client):
     assert len(items) == 2
     assert all(item["is_open"] is False for item in items)
     assert sorted((item["closed_at"] for item in items if item["closed_at"])) == ["2026-03-05", "2026-03-20"]
+
+
+def test_rakuten_import_fallback_distinguishes_same_day_same_qty_trades_by_price(client):
+    items = [
+        {
+            "source_signature": "price-sig-1",
+            "source_position_key": "price-pos-1",
+            "source_lot_sequence": 1,
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2026-03-01", "price": 2500, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "sell": {"date": "2026-03-10", "price": 2600, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "source_lines": [1, 3],
+            "already_imported": False,
+            "is_partial_exit": False,
+            "remaining_qty_after_sell": 0,
+        },
+        {
+            "source_signature": "price-sig-2",
+            "source_position_key": "price-pos-2",
+            "source_lot_sequence": 1,
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2026-03-01", "price": 2520, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "sell": {"date": "2026-03-10", "price": 2620, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "source_lines": [2, 4],
+            "already_imported": False,
+            "is_partial_exit": False,
+            "remaining_qty_after_sell": 0,
+        },
+    ]
+
+    first_commit = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "same_day_price.csv", "items": items})
+    assert first_commit.status_code == 200
+    trade_ids = first_commit.json()["created_trade_ids"]
+    assert len(trade_ids) == 2
+
+    first_trade_id, second_trade_id = trade_ids
+    assert client.patch(f"/api/v1/trades/{first_trade_id}", json={"notes_buy": "first-lot"}).status_code == 200
+    assert client.patch(f"/api/v1/trades/{second_trade_id}", json={"notes_buy": "second-lot"}).status_code == 200
+
+    _rewrite_import_record_lineage(first_trade_id, signature="legacy-price-1", position_key="legacy-pos-price-1", lot_sequence=101)
+    _rewrite_import_record_lineage(second_trade_id, signature="legacy-price-2", position_key="legacy-pos-price-2", lot_sequence=102)
+
+    second_commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "same_day_price.csv", "items": items},
+    )
+    assert second_commit.status_code == 200
+    assert second_commit.json()["created_count"] == 0
+    assert second_commit.json()["updated_count"] == 2
+
+    first_detail = client.get(f"/api/v1/trades/{first_trade_id}")
+    second_detail = client.get(f"/api/v1/trades/{second_trade_id}")
+    assert first_detail.status_code == 200
+    assert second_detail.status_code == 200
+
+    first_body = first_detail.json()
+    second_body = second_detail.json()
+    first_buy = next(fill for fill in first_body["fills"] if fill["side"] == "buy")
+    first_sell = next(fill for fill in first_body["fills"] if fill["side"] == "sell")
+    second_buy = next(fill for fill in second_body["fills"] if fill["side"] == "buy")
+    second_sell = next(fill for fill in second_body["fills"] if fill["side"] == "sell")
+
+    assert first_body["notes_buy"] == "first-lot"
+    assert first_buy["price"] == 2500.0
+    assert first_sell["price"] == 2600.0
+    assert second_body["notes_buy"] == "second-lot"
+    assert second_buy["price"] == 2520.0
+    assert second_sell["price"] == 2620.0
+
+
+def test_rakuten_import_fallback_distinguishes_same_day_same_price_trades_by_fee(client):
+    items = [
+        {
+            "source_signature": "fee-sig-1",
+            "source_position_key": "fee-pos-1",
+            "source_lot_sequence": 1,
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2026-03-01", "price": 2500, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "sell": {"date": "2026-03-10", "price": 2600, "qty": 100, "fee": 100, "fee_total_jpy": 100},
+            "source_lines": [1, 3],
+            "already_imported": False,
+            "is_partial_exit": False,
+            "remaining_qty_after_sell": 0,
+        },
+        {
+            "source_signature": "fee-sig-2",
+            "source_position_key": "fee-pos-2",
+            "source_lot_sequence": 1,
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2026-03-01", "price": 2500, "qty": 100, "fee": 200, "fee_total_jpy": 200},
+            "sell": {"date": "2026-03-10", "price": 2600, "qty": 100, "fee": 200, "fee_total_jpy": 200},
+            "source_lines": [2, 4],
+            "already_imported": False,
+            "is_partial_exit": False,
+            "remaining_qty_after_sell": 0,
+        },
+    ]
+
+    first_commit = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "same_day_fee.csv", "items": items})
+    assert first_commit.status_code == 200
+    trade_ids = first_commit.json()["created_trade_ids"]
+    assert len(trade_ids) == 2
+
+    first_trade_id, second_trade_id = trade_ids
+    assert client.patch(f"/api/v1/trades/{first_trade_id}", json={"notes_buy": "fee-100"}).status_code == 200
+    assert client.patch(f"/api/v1/trades/{second_trade_id}", json={"notes_buy": "fee-200"}).status_code == 200
+
+    _rewrite_import_record_lineage(first_trade_id, signature="legacy-fee-1", position_key="legacy-pos-fee-1", lot_sequence=201)
+    _rewrite_import_record_lineage(second_trade_id, signature="legacy-fee-2", position_key="legacy-pos-fee-2", lot_sequence=202)
+
+    second_commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "same_day_fee.csv", "items": items},
+    )
+    assert second_commit.status_code == 200
+    assert second_commit.json()["created_count"] == 0
+    assert second_commit.json()["updated_count"] == 2
+
+    first_detail = client.get(f"/api/v1/trades/{first_trade_id}")
+    second_detail = client.get(f"/api/v1/trades/{second_trade_id}")
+    assert first_detail.status_code == 200
+    assert second_detail.status_code == 200
+
+    first_body = first_detail.json()
+    second_body = second_detail.json()
+    first_buy = next(fill for fill in first_body["fills"] if fill["side"] == "buy")
+    first_sell = next(fill for fill in first_body["fills"] if fill["side"] == "sell")
+    second_buy = next(fill for fill in second_body["fills"] if fill["side"] == "buy")
+    second_sell = next(fill for fill in second_body["fills"] if fill["side"] == "sell")
+
+    assert first_body["notes_buy"] == "fee-100"
+    assert first_buy["fee_total_jpy"] == 100
+    assert first_sell["fee_total_jpy"] == 100
+    assert second_body["notes_buy"] == "fee-200"
+    assert second_buy["fee_total_jpy"] == 200
+    assert second_sell["fee_total_jpy"] == 200
+
+
+def test_rakuten_import_open_remaining_fallback_matches_existing_trade_by_open_price_and_fee(client):
+    items = [
+        {
+            "source_signature": "open-sig-1",
+            "source_position_key": "open-pos-1",
+            "source_lot_sequence": 1,
+            "symbol": "7203",
+            "name": "トヨタ自動車",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2026-03-01", "price": 2500, "qty": 100, "fee": 175, "fee_total_jpy": 175},
+            "sell": None,
+            "source_lines": [1],
+            "already_imported": False,
+            "is_partial_exit": False,
+            "remaining_qty_after_sell": 100,
+        }
+    ]
+
+    first_commit = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "open_remaining.csv", "items": items})
+    assert first_commit.status_code == 200
+    trade_id = first_commit.json()["created_trade_ids"][0]
+
+    assert client.patch(f"/api/v1/trades/{trade_id}", json={"notes_buy": "holding-note"}).status_code == 200
+    _rewrite_import_record_lineage(trade_id, signature="legacy-open-1", position_key="legacy-pos-open-1", lot_sequence=301)
+
+    second_commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "open_remaining.csv", "items": items},
+    )
+    assert second_commit.status_code == 200
+    assert second_commit.json()["created_count"] == 0
+    assert second_commit.json()["updated_count"] == 1
+
+    detail = client.get(f"/api/v1/trades/{trade_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    buy_fill = next(fill for fill in body["fills"] if fill["side"] == "buy")
+    assert body["notes_buy"] == "holding-note"
+    assert body["is_open"] is True
+    assert body["closed_at"] in ("", None)
+    assert buy_fill["price"] == 2500.0
+    assert buy_fill["fee_total_jpy"] == 175
 
 
 def test_rakuten_import_commit_with_wider_csv_does_not_delete_unmatched_existing_import_trade(client):
