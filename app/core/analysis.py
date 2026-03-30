@@ -16,7 +16,10 @@ from app.crud.trades import compute_profit_holding
 from app.db.models import Trade
 from app.schemas.analysis import (
     AnalysisDataSufficiencyRead,
+    AnalysisDiagnosisCardRead,
+    AnalysisHoldingBucketRead,
     AnalysisMarketStatRead,
+    AnalysisReviewGapRead,
     AnalysisStatsRead,
     AnalysisSummaryRead,
     AnalysisTagStatRead,
@@ -99,10 +102,102 @@ def _avg(values: list[float]) -> Optional[float]:
     return sum(values) / len(values)
 
 
+def _avg_abs(values: list[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(abs(value) for value in values) / len(values)
+
+
 def _round_or_none(value: Optional[float], digits: int = 1) -> Optional[float]:
     if value is None:
         return None
     return round(value, digits)
+
+
+def _win_rate(trades: list[ClosedTradeSnapshot]) -> Optional[float]:
+    if not trades:
+        return None
+    wins = len([item for item in trades if item.profit_value > 0])
+    return (wins / len(trades)) * 100.0
+
+
+def _streak_lengths(closed: list[ClosedTradeSnapshot]) -> tuple[int, int]:
+    longest_win = 0
+    longest_loss = 0
+    current_win = 0
+    current_loss = 0
+    ordered = sorted(closed, key=lambda item: (item.closed_at, item.opened_at, item.trade_id))
+    for item in ordered:
+        if item.profit_value > 0:
+            current_win += 1
+            current_loss = 0
+        elif item.profit_value < 0:
+            current_loss += 1
+            current_win = 0
+        else:
+            current_win = 0
+            current_loss = 0
+        longest_win = max(longest_win, current_win)
+        longest_loss = max(longest_loss, current_loss)
+    return longest_win, longest_loss
+
+
+def _select_primary_market(closed: list[ClosedTradeSnapshot]) -> tuple[Optional[str], list[ClosedTradeSnapshot]]:
+    if not closed:
+        return None, []
+
+    grouped: dict[str, list[ClosedTradeSnapshot]] = {}
+    for item in closed:
+        grouped.setdefault(item.market, []).append(item)
+
+    primary_market = max(
+        grouped.keys(),
+        key=lambda market: (
+            len(grouped[market]),
+            _avg_abs([item.profit_value for item in grouped[market]]) or 0.0,
+            market == "JP",
+        ),
+    )
+    return primary_market, grouped[primary_market]
+
+
+def _holding_buckets(primary_closed: list[ClosedTradeSnapshot]) -> list[AnalysisHoldingBucketRead]:
+    ranges = [
+        ("1-3日", lambda days: days <= 3),
+        ("4-10日", lambda days: 4 <= days <= 10),
+        ("11-30日", lambda days: 11 <= days <= 30),
+        ("31日以上", lambda days: days >= 31),
+    ]
+
+    buckets: list[AnalysisHoldingBucketRead] = []
+    for label, predicate in ranges:
+        items = [item for item in primary_closed if predicate(item.holding_days)]
+        wins = [item.profit_value for item in items if item.profit_value > 0]
+        losses = [item.profit_value for item in items if item.profit_value < 0]
+        buckets.append(
+            AnalysisHoldingBucketRead(
+                label=label,
+                closed_trade_count=len(items),
+                win_rate_pct=_round_or_none(_win_rate(items)),
+                avg_net_profit_amount=_round_or_none(_avg([item.profit_value for item in items])),
+                avg_win_profit_amount=_round_or_none(_avg(wins)),
+                avg_loss_amount=_round_or_none(_avg_abs(losses)),
+            )
+        )
+    return buckets
+
+
+def _window_metrics(items: list[ClosedTradeSnapshot]) -> dict[str, object]:
+    wins = [item.profit_value for item in items if item.profit_value > 0]
+    losses = [item.profit_value for item in items if item.profit_value < 0]
+    return {
+        "closed_trade_count": len(items),
+        "win_rate_pct": _round_or_none(_win_rate(items)),
+        "avg_win_profit_amount": _round_or_none(_avg(wins)),
+        "avg_loss_amount": _round_or_none(_avg_abs(losses)),
+        "avg_holding_days": _round_or_none(_avg([float(item.holding_days) for item in items])),
+        "avg_roi_pct": _round_or_none(_avg([float(item.roi_pct) for item in items if item.roi_pct is not None])),
+    }
 
 
 def _build_stats(trades: list[Trade]) -> tuple[AnalysisStatsRead, list[ClosedTradeSnapshot]]:
@@ -120,6 +215,20 @@ def _build_stats(trades: list[Trade]) -> tuple[AnalysisStatsRead, list[ClosedTra
     tag_counter = Counter()
     for item in closed:
         tag_counter.update(item.tags)
+
+    primary_market, primary_closed = _select_primary_market(closed)
+    primary_profit_currency = primary_closed[0].profit_currency if primary_closed else None
+    primary_wins = [item for item in primary_closed if item.profit_value > 0]
+    primary_losses = [item for item in primary_closed if item.profit_value < 0]
+    avg_win_profit_amount = _avg([item.profit_value for item in primary_wins])
+    avg_loss_amount = _avg_abs([item.profit_value for item in primary_losses])
+    profit_loss_ratio = None
+    if avg_win_profit_amount is not None and avg_loss_amount not in (None, 0):
+        profit_loss_ratio = avg_win_profit_amount / avg_loss_amount
+
+    recent_primary = sorted(primary_closed, key=lambda item: (item.closed_at, item.opened_at, item.trade_id))[-20:]
+    recent_metrics = _window_metrics(recent_primary)
+    longest_win_streak, longest_loss_streak = _streak_lengths(primary_closed)
 
     market_stats = []
     for market in ("JP", "US"):
@@ -150,8 +259,25 @@ def _build_stats(trades: list[Trade]) -> tuple[AnalysisStatsRead, list[ClosedTra
         avg_holding_days=_round_or_none(_avg(holding_values)),
         avg_rating=_round_or_none(_avg(rating_values)),
         review_completion_rate_pct=_round_or_none((review_done_count / len(closed) * 100.0) if closed else None),
+        primary_market=primary_market,
+        primary_profit_currency=primary_profit_currency,
+        primary_closed_trade_count=len(primary_closed),
+        avg_win_profit_amount=_round_or_none(avg_win_profit_amount),
+        avg_loss_amount=_round_or_none(avg_loss_amount),
+        profit_loss_ratio=_round_or_none(profit_loss_ratio),
+        avg_win_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_wins])),
+        avg_loss_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_losses])),
+        recent_closed_trade_count=int(recent_metrics["closed_trade_count"]),
+        recent_win_rate_pct=recent_metrics["win_rate_pct"],
+        recent_avg_win_profit_amount=recent_metrics["avg_win_profit_amount"],
+        recent_avg_loss_amount=recent_metrics["avg_loss_amount"],
+        recent_avg_holding_days=recent_metrics["avg_holding_days"],
+        recent_avg_roi_pct=recent_metrics["avg_roi_pct"],
+        longest_win_streak=longest_win_streak,
+        longest_loss_streak=longest_loss_streak,
         top_tags=[AnalysisTagStatRead(tag=tag, count=count) for tag, count in tag_counter.most_common(5)],
         market_breakdown=market_stats,
+        holding_buckets=_holding_buckets(primary_closed),
     )
     return stats, closed
 
@@ -274,53 +400,205 @@ def _holding_tendency_label(wins: list[ClosedTradeSnapshot], losses: list[Closed
     return "利益・損失トレードで平均保有日数に大きな差はありません。"
 
 
-def _build_rule_based_sections(stats: AnalysisStatsRead, closed: list[ClosedTradeSnapshot]) -> tuple[str, list[str], list[str], list[str]]:
+def _market_basis_label(stats: AnalysisStatsRead) -> str:
+    if not stats.primary_market or not stats.primary_closed_trade_count:
+        return "決済済みトレード"
+    currency = stats.primary_profit_currency or ""
+    return f"{stats.primary_market}トレード {stats.primary_closed_trade_count}件（{currency}ベース）"
+
+
+def _review_gap_reads(closed: list[ClosedTradeSnapshot]) -> list[AnalysisReviewGapRead]:
+    return [
+        AnalysisReviewGapRead(label=label, missing_count=count)
+        for label, count in _missing_review_fields(closed)
+        if count > 0
+    ]
+
+
+def _build_diagnosis_cards(stats: AnalysisStatsRead, closed: list[ClosedTradeSnapshot]) -> list[AnalysisDiagnosisCardRead]:
+    basis_label = _market_basis_label(stats)
+    cards: list[AnalysisDiagnosisCardRead] = []
+
+    pnl_tone = "neutral"
+    pnl_hypothesis = "収支構造はまだ判断材料が少ない状態です。"
+    pnl_summary = f"{basis_label} を金額損益ベースで見ると、まだ勝ち負けの偏りを断言しにくいです。"
+    if stats.avg_win_profit_amount is not None and stats.avg_loss_amount is not None:
+        if (stats.profit_loss_ratio or 0) < 1:
+            pnl_tone = "warning"
+            if (stats.win_rate_pct or 0) >= 50:
+                pnl_hypothesis = "勝率に対して1回の負けが重い可能性があります。"
+            else:
+                pnl_hypothesis = "大きな負けが全体収支を圧迫している可能性があります。"
+        else:
+            pnl_tone = "positive"
+            if (stats.win_rate_pct or 0) < 50:
+                pnl_hypothesis = "勝率が低めでも、利幅で補えている可能性があります。"
+            else:
+                pnl_hypothesis = "利益額と損失額のバランスは比較的安定しています。"
+        pnl_summary = (
+            f"{basis_label} では平均利益額が {stats.avg_win_profit_amount or 0:.1f}、"
+            f"平均損失額が {stats.avg_loss_amount or 0:.1f} です。"
+        )
+    cards.append(
+        AnalysisDiagnosisCardRead(
+            key="pnl_structure",
+            title="収支構造",
+            hypothesis=pnl_hypothesis,
+            summary=pnl_summary,
+            evidence=[
+                f"平均利益額: {stats.avg_win_profit_amount or 0:.1f}",
+                f"平均損失額: {stats.avg_loss_amount or 0:.1f}",
+                f"利益額/損失額比: {stats.profit_loss_ratio or 0:.2f} / 勝率 {stats.win_rate_pct or 0:.1f}%",
+            ],
+            tone=pnl_tone,
+        )
+    )
+
+    best_bucket = max(
+        stats.holding_buckets,
+        key=lambda item: ((item.avg_net_profit_amount or -999999.0), item.closed_trade_count),
+        default=None,
+    )
+    worst_bucket = min(
+        [item for item in stats.holding_buckets if item.closed_trade_count > 0],
+        key=lambda item: ((item.avg_net_profit_amount or 999999.0), -item.closed_trade_count),
+        default=None,
+    )
+    holding_tone = "neutral"
+    holding_hypothesis = "保有日数による大きな差はまだ断定できません。"
+    if (
+        stats.avg_win_holding_days is not None
+        and stats.avg_loss_holding_days is not None
+        and stats.avg_loss_holding_days > stats.avg_win_holding_days + 3
+    ):
+        holding_tone = "warning"
+        holding_hypothesis = "長めの保有で損失が膨らみやすい傾向があります。"
+    elif (
+        stats.avg_win_holding_days is not None
+        and stats.avg_loss_holding_days is not None
+        and stats.avg_win_holding_days > stats.avg_loss_holding_days + 3
+    ):
+        holding_tone = "positive"
+        holding_hypothesis = "少し保有できたトレードの方が利益につながりやすい傾向があります。"
+    holding_summary = (
+        f"勝ちトレードの平均保有日数は {stats.avg_win_holding_days or 0:.1f} 日、"
+        f"負けトレードは {stats.avg_loss_holding_days or 0:.1f} 日です。"
+    )
+    bucket_evidence = "保有日数帯の特徴はまだ十分に出ていません。"
+    if best_bucket and worst_bucket and best_bucket.closed_trade_count > 0 and worst_bucket.closed_trade_count > 0:
+        bucket_evidence = (
+            f"最も良い帯は {best_bucket.label}（平均損益 {best_bucket.avg_net_profit_amount or 0:.1f}）、"
+            f"最も弱い帯は {worst_bucket.label}（平均損益 {worst_bucket.avg_net_profit_amount or 0:.1f}）です。"
+        )
+    cards.append(
+        AnalysisDiagnosisCardRead(
+            key="holding_execution",
+            title="保有と執行の歪み",
+            hypothesis=holding_hypothesis,
+            summary=holding_summary,
+            evidence=[
+                f"勝ち平均保有日数: {stats.avg_win_holding_days or 0:.1f}日",
+                f"負け平均保有日数: {stats.avg_loss_holding_days or 0:.1f}日",
+                bucket_evidence,
+            ],
+            tone=holding_tone,
+        )
+    )
+
+    recent_tone = "neutral"
+    recent_hypothesis = "直近では大きな変化はまだ強く出ていません。"
+    if stats.recent_closed_trade_count < 5:
+        recent_summary = "直近比較の件数が少ないため、最近の変化は参考値です。"
+    else:
+        recent_summary = (
+            f"直近{stats.recent_closed_trade_count}件では勝率 {stats.recent_win_rate_pct or 0:.1f}%、"
+            f"平均損失額 {stats.recent_avg_loss_amount or 0:.1f} です。"
+        )
+        if (
+            stats.avg_loss_amount is not None
+            and stats.recent_avg_loss_amount is not None
+            and stats.recent_avg_loss_amount > stats.avg_loss_amount * 1.2
+        ) or (
+            stats.win_rate_pct is not None
+            and stats.recent_win_rate_pct is not None
+            and stats.recent_win_rate_pct + 10 < stats.win_rate_pct
+        ):
+            recent_tone = "warning"
+            recent_hypothesis = "直近では過去より執行が荒くなっている可能性があります。"
+        elif (
+            stats.avg_loss_amount is not None
+            and stats.recent_avg_loss_amount is not None
+            and stats.recent_avg_loss_amount < stats.avg_loss_amount * 0.85
+        ) or (
+            stats.win_rate_pct is not None
+            and stats.recent_win_rate_pct is not None
+            and stats.recent_win_rate_pct > stats.win_rate_pct + 10
+        ):
+            recent_tone = "positive"
+            recent_hypothesis = "直近では過去より執行が安定してきている可能性があります。"
+    cards.append(
+        AnalysisDiagnosisCardRead(
+            key="recent_change",
+            title="最近の変化",
+            hypothesis=recent_hypothesis,
+            summary=recent_summary,
+            evidence=[
+                f"全履歴 勝率: {stats.win_rate_pct or 0:.1f}% / 直近: {stats.recent_win_rate_pct or 0:.1f}%",
+                f"全履歴 平均利益額: {stats.avg_win_profit_amount or 0:.1f} / 直近: {stats.recent_avg_win_profit_amount or 0:.1f}",
+                f"全履歴 平均損失額: {stats.avg_loss_amount or 0:.1f} / 直近: {stats.recent_avg_loss_amount or 0:.1f}",
+            ],
+            tone=recent_tone,
+        )
+    )
+
+    return cards
+
+
+def _build_rule_based_sections(
+    stats: AnalysisStatsRead, closed: list[ClosedTradeSnapshot]
+) -> tuple[str, list[AnalysisDiagnosisCardRead], list[str], list[str], list[str], list[AnalysisReviewGapRead]]:
     wins = [item for item in closed if item.profit_value > 0]
     losses = [item for item in closed if item.profit_value < 0]
-    top_missing = _missing_review_fields(closed)
-    top_gap_label = " / ".join(f"{label} {count}件" for label, count in top_missing[:3] if count > 0)
-    top_gap_summary = top_gap_label or "主要な入力欠損は少なめです"
+    diagnoses = _build_diagnosis_cards(stats, closed)
+    review_gaps = _review_gap_reads(closed)
+    gap_summary = " / ".join(f"{item.label} {item.missing_count}件" for item in review_gaps[:3]) or "補助情報の欠損は少なめです"
     summary = (
-        f"決済済みトレードは {stats.closed_trade_count} 件、勝率は {stats.win_rate_pct or 0:.1f}% です。"
-        f" 平均保有日数は {stats.avg_holding_days or 0:.1f} 日、レビュー完了率は {stats.review_completion_rate_pct or 0:.1f}% です。"
-        f" 現時点では {top_gap_summary} が次の改善余地として見えます。"
+        f"決済済みトレードは {stats.closed_trade_count} 件です。"
+        f" まずは収支構造、保有の歪み、最近の変化の3点から売買スタイルを診断します。"
+        f" 補助情報では {gap_summary} が残っています。"
     )
 
     win_patterns: list[str] = []
+    if stats.avg_win_profit_amount is not None:
+        win_patterns.append(f"平均利益額は {stats.avg_win_profit_amount:.1f} です。")
     if wins:
-        win_patterns.append(
-            f"利益トレード {len(wins)} 件では、タグ傾向として {_top_tags_label(wins)} が目立ちます。"
-        )
-        avg_roi_wins = _avg([float(item.roi_pct) for item in wins if item.roi_pct is not None])
-        if avg_roi_wins is not None:
-            win_patterns.append(f"利益トレードの平均損益率は {avg_roi_wins:.1f}% です。")
-    win_patterns.append(_holding_tendency_label(wins, losses))
+        win_patterns.append(_holding_tendency_label(wins, losses))
+    if stats.recent_win_rate_pct is not None:
+        win_patterns.append(f"直近{stats.recent_closed_trade_count}件の勝率は {stats.recent_win_rate_pct:.1f}% です。")
 
     loss_patterns: list[str] = []
-    if losses:
-        loss_patterns.append(
-            f"損失トレード {len(losses)} 件では、タグ傾向として {_top_tags_label(losses)} が目立ちます。"
-        )
-        avg_roi_losses = _avg([float(item.roi_pct) for item in losses if item.roi_pct is not None])
-        if avg_roi_losses is not None:
-            loss_patterns.append(f"損失トレードの平均損益率は {avg_roi_losses:.1f}% です。")
-    else:
-        loss_patterns.append("損失トレードがまだ少ないため、負けパターンは十分に観測されていません。")
-    if top_missing and top_missing[0][1] > 0:
-        loss_patterns.append(f"決済後の振り返りでは {top_missing[0][0]} の未入力が最も多く、分析精度を下げています。")
+    if stats.avg_loss_amount is not None:
+        loss_patterns.append(f"平均損失額は {stats.avg_loss_amount:.1f} です。")
+    if stats.profit_loss_ratio is not None:
+        loss_patterns.append(f"利益額/損失額比は {stats.profit_loss_ratio:.2f} です。")
+    if review_gaps:
+        loss_patterns.append(f"補助情報では {review_gaps[0].label} の未入力が最も多い状態です。")
 
     actions: list[str] = []
-    for label, count in top_missing[:3]:
-        if count <= 0:
-            continue
-        actions.append(f"次回の振り返りでは {label} を優先して埋めてください（未入力 {count} 件）。")
-    if not actions:
-        actions.append("次の5件は同じ基準でタグと考察を揃え、再現性を比較できるようにしてください。")
-    if stats.review_completion_rate_pct is not None and stats.review_completion_rate_pct < 70:
-        actions.append("レビュー完了率が低めなので、まず未レビューの決済済みトレードを片付けてください。")
-    actions.append("勝ちトレードと負けトレードで保有日数とタグの差を見比べ、次回の売買ルール候補を1つ残してください。")
+    if diagnoses:
+        actions.append(f"まずは「{diagnoses[0].title}」の仮説を詳細トレードで確認してください。")
+    if stats.holding_buckets:
+        weakest = min(
+            [item for item in stats.holding_buckets if item.closed_trade_count > 0],
+            key=lambda item: (item.avg_net_profit_amount or 999999.0, -item.closed_trade_count),
+            default=None,
+        )
+        if weakest:
+            actions.append(f"{weakest.label} のトレードを見直し、保有ルールの仮説を1つ残してください。")
+    if review_gaps:
+        actions.append(f"補助情報では {review_gaps[0].label} を埋めると、次の分析精度が上がります。")
 
-    return summary, win_patterns[:3], loss_patterns[:3], actions[:3]
+    return summary, diagnoses[:3], win_patterns[:3], loss_patterns[:3], actions[:3], review_gaps[:5]
 
 
 def _extract_response_text(payload: dict) -> str:
@@ -461,15 +739,17 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         if cached and cached[0] > now_ts:
             return cached[1]
 
-    rule_summary, rule_win_patterns, rule_loss_patterns, rule_actions = _build_rule_based_sections(stats, closed)
+    rule_summary, rule_diagnoses, rule_win_patterns, rule_loss_patterns, rule_actions, rule_review_gaps = _build_rule_based_sections(stats, closed)
 
     if not enough_data:
         result = AnalysisSummaryRead(
             summary=rule_summary,
+            diagnoses=rule_diagnoses,
             win_patterns=rule_win_patterns,
             loss_patterns=rule_loss_patterns,
             actions=rule_actions,
             stats=stats,
+            review_gaps=rule_review_gaps,
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=False,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -483,10 +763,12 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         summary, win_patterns, loss_patterns, actions = _build_mock_sections(stats)
         result = AnalysisSummaryRead(
             summary=summary,
+            diagnoses=rule_diagnoses,
             win_patterns=win_patterns,
             loss_patterns=loss_patterns,
             actions=actions,
             stats=stats,
+            review_gaps=rule_review_gaps,
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=True,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -499,10 +781,12 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
     elif not _llm_enabled():
         result = AnalysisSummaryRead(
             summary=rule_summary,
+            diagnoses=rule_diagnoses,
             win_patterns=rule_win_patterns,
             loss_patterns=rule_loss_patterns,
             actions=rule_actions,
             stats=stats,
+            review_gaps=rule_review_gaps,
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=True,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -517,10 +801,12 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
             summary, win_patterns, loss_patterns, actions, _ = _generate_llm_sections(stats, closed, user_id or "public")
             result = AnalysisSummaryRead(
                 summary=summary,
+                diagnoses=rule_diagnoses,
                 win_patterns=win_patterns,
                 loss_patterns=loss_patterns,
                 actions=actions,
                 stats=stats,
+                review_gaps=rule_review_gaps,
                 data_sufficiency=AnalysisDataSufficiencyRead(
                     enough_data=True,
                     minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -533,10 +819,12 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
         except RuntimeError:
             result = AnalysisSummaryRead(
                 summary=rule_summary,
+                diagnoses=rule_diagnoses,
                 win_patterns=rule_win_patterns,
                 loss_patterns=rule_loss_patterns,
                 actions=rule_actions,
                 stats=stats,
+                review_gaps=rule_review_gaps,
                 data_sufficiency=AnalysisDataSufficiencyRead(
                     enough_data=True,
                     minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,

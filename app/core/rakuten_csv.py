@@ -24,14 +24,21 @@ _HEADER_ALIASES = {
     "price": {"約定単価", "単価", "価格", "約定価格", "単価［円］", "単価[円]"},
     "fee": {
         "手数料",
-        "諸費用",
         "手数料等",
-        "手数料・諸費用",
         "委託手数料",
         "手数料［円］",
         "手数料[円]",
+    },
+    "other_fee": {
+        "諸費用",
         "諸費用［円］",
         "諸費用[円]",
+        "手数料・諸費用",
+    },
+    "tax_fee": {
+        "税金等",
+        "税金等［円］",
+        "税金等[円]",
     },
     "trade_type": {"取引区分", "商品", "現物信用", "口座区分", "取引種別", "取引"},
     "credit_type": {"信用区分", "新規返済", "建区分", "新規建区分", "信用新規建区分"},
@@ -346,7 +353,8 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
         side = _parse_row_side(row, headers)
         qty = _parse_jp_int(row.get(headers["qty"]))
         price = _parse_jp_int(row.get(headers["price"]))
-        fee = _parse_jp_int(row.get(headers.get("fee", ""))) or 0
+        fee = (_parse_jp_int(row.get(headers.get("fee", ""))) or 0) + (_parse_jp_int(row.get(headers.get("other_fee", ""))) or 0)
+        fee += _parse_jp_int(row.get(headers.get("tax_fee", ""))) or 0
 
         if not all([date, symbol, name, side]) or qty is None or price is None:
             errors.append(

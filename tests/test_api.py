@@ -174,9 +174,13 @@ def test_analysis_summary_insufficient_data_returns_stats_only(client):
     assert len(body["win_patterns"]) >= 1
     assert len(body["loss_patterns"]) >= 1
     assert len(body["actions"]) >= 1
+    assert len(body["diagnoses"]) == 3
     assert body["stats"]["closed_trade_count"] == 1
     assert body["stats"]["open_trade_count"] == 1
     assert body["stats"]["win_trade_count"] == 1
+    assert body["stats"]["primary_market"] == "JP"
+    assert len(body["stats"]["holding_buckets"]) == 4
+    assert len(body["review_gaps"]) >= 1
     assert body["data_sufficiency"]["enough_data"] is False
     assert body["data_sufficiency"]["llm_status"] == "rule_based"
 
@@ -221,6 +225,7 @@ def test_analysis_summary_generates_llm_sections_when_configured(client, monkeyp
         assert body["summary"].startswith("全体として利確")
         assert body["data_sufficiency"]["enough_data"] is True
         assert body["data_sufficiency"]["llm_status"] == "generated"
+        assert len(body["diagnoses"]) == 3
         assert len(body["win_patterns"]) == 1
         assert len(body["actions"]) == 1
     finally:
@@ -251,6 +256,7 @@ def test_analysis_summary_uses_mock_mode_without_openai_key(client):
         body = res.json()
         assert body["data_sufficiency"]["llm_status"] == "mock"
         assert "テスト用のAI要約" in body["summary"]
+        assert len(body["diagnoses"]) == 3
         assert len(body["actions"]) == 3
     finally:
         settings.analysis_mock_enabled = prev_mock
@@ -283,6 +289,7 @@ def test_analysis_summary_falls_back_to_stats_when_llm_fails(client, monkeypatch
         assert res.status_code == 200
         body = res.json()
         assert body["summary"] is not None
+        assert len(body["diagnoses"]) == 3
         assert len(body["actions"]) >= 1
         assert body["data_sufficiency"]["llm_status"] == "fallback"
         assert body["stats"]["loss_trade_count"] == 5
@@ -309,9 +316,14 @@ def test_analysis_summary_uses_rule_based_sections_without_openai(client):
     body = res.json()
     assert body["data_sufficiency"]["llm_status"] == "rule_based"
     assert body["summary"] is not None
+    assert len(body["diagnoses"]) == 3
     assert len(body["win_patterns"]) >= 1
     assert len(body["loss_patterns"]) >= 1
     assert len(body["actions"]) >= 1
+    assert body["stats"]["avg_win_profit_amount"] is not None
+    assert body["stats"]["avg_loss_amount"] is not None
+    assert body["stats"]["recent_closed_trade_count"] == 5
+    assert len(body["stats"]["holding_buckets"]) == 4
 
 
 def test_trades_requires_auth_when_enabled(client):
