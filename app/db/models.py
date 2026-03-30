@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import ASSET_TYPES
@@ -140,12 +140,17 @@ class TradeImportRecord(Base):
     __table_args__ = (
         UniqueConstraint("source_signature", name="uq_trade_import_records_source_signature"),
         Index("idx_trade_import_records_trade_id", "trade_id"),
+        Index("idx_trade_import_records_position_state", "source_position_key", "import_state"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     broker: Mapped[str] = mapped_column(String, nullable=False)
     source_name: Mapped[Optional[str]] = mapped_column(String)
     source_signature: Mapped[str] = mapped_column(String, nullable=False)
+    source_position_key: Mapped[Optional[str]] = mapped_column(String)
+    source_lot_sequence: Mapped[Optional[int]] = mapped_column(Integer)
+    import_state: Mapped[str] = mapped_column(String, nullable=False, default="closed_round_trip")
+    is_partial_exit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     trade_id: Mapped[Optional[int]] = mapped_column(ForeignKey("trades.id", ondelete="SET NULL"))
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
 

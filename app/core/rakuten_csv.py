@@ -71,6 +71,21 @@ class _AggregatedTrade:
     row_signatures: list[str]
 
 
+@dataclass
+class _OpenLot:
+    symbol: str
+    name: str
+    date: str
+    qty: int
+    price: int
+    remaining_qty: int
+    remaining_fee: int
+    lines: list[int]
+    row_signatures: list[str]
+    source_position_key: str
+    next_sequence: int = 1
+
+
 def _normalize_header(text: str) -> str:
     return str(text or "").strip().replace("\ufeff", "")
 
@@ -219,25 +234,150 @@ def _aggregate_rows(rows: list[_RawCsvTrade]) -> list[_AggregatedTrade]:
     return aggregated
 
 
-def _candidate_signature(buy: _AggregatedTrade, sell: _AggregatedTrade) -> str:
+def _position_key(buy: _AggregatedTrade) -> str:
     base = "|".join(
         [
             "rakuten",
             "JP",
             buy.symbol,
             buy.date,
-            str(buy.qty),
             str(buy.price),
-            str(buy.fee),
-            sell.date,
-            str(sell.qty),
-            str(sell.price),
-            str(sell.fee),
             ",".join(buy.row_signatures),
-            ",".join(sell.row_signatures),
         ]
     )
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
+def _candidate_signature(
+    buy_symbol: str,
+    buy_date: str,
+    buy_qty: int,
+    buy_price: int,
+    buy_fee: int,
+    source_position_key: str,
+    source_lot_sequence: int,
+    buy_row_signatures: list[str],
+    *,
+    sell: Optional[_AggregatedTrade] = None,
+) -> str:
+    parts = [
+        "rakuten",
+        "JP",
+        "closed" if sell is not None else "open",
+        buy_symbol,
+        source_position_key,
+        str(source_lot_sequence),
+        buy_date,
+        str(buy_qty),
+        str(buy_price),
+        str(buy_fee),
+        ",".join(buy_row_signatures),
+    ]
+    if sell is not None:
+        parts.extend(
+            [
+                sell.date,
+                str(buy_qty),
+                str(sell.price),
+                str(sell.fee),
+                ",".join(sell.row_signatures),
+            ]
+        )
+    base = "|".join(parts)
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
+def _allocate_fee_portion(total_fee: int, portion_qty: int, total_qty: int) -> int:
+    if total_fee <= 0 or portion_qty <= 0 or total_qty <= 0:
+        return 0
+    if portion_qty >= total_qty:
+        return max(0, int(total_fee))
+    allocated = (Decimal(total_fee) * Decimal(portion_qty) / Decimal(total_qty)).quantize(
+        Decimal("1"), rounding=ROUND_HALF_UP
+    )
+    return max(0, min(int(total_fee), int(allocated)))
+
+
+def _candidate_from_buy_sell(
+    buy_lot: _OpenLot,
+    sell: _AggregatedTrade,
+    matched_qty: int,
+    buy_fee: int,
+    sell_fee: int,
+    *,
+    is_partial_exit: bool,
+    remaining_qty_after_sell: int,
+) -> ImportTradeCandidateRead:
+    sequence = buy_lot.next_sequence
+    buy_lot.next_sequence += 1
+    sell_preview = _AggregatedTrade(
+        symbol=sell.symbol,
+        name=sell.name,
+        side=sell.side,
+        date=sell.date,
+        qty=matched_qty,
+        price=sell.price,
+        fee=sell_fee,
+        lines=sell.lines,
+        row_signatures=sell.row_signatures,
+    )
+    return ImportTradeCandidateRead(
+        source_signature=_candidate_signature(
+            buy_lot.symbol,
+            buy_lot.date,
+            matched_qty,
+            buy_lot.price,
+            buy_fee,
+            buy_lot.source_position_key,
+            sequence,
+            buy_lot.row_signatures,
+            sell=sell_preview,
+        ),
+        source_position_key=buy_lot.source_position_key,
+        source_lot_sequence=sequence,
+        symbol=buy_lot.symbol,
+        name=buy_lot.name or sell.name or buy_lot.symbol,
+        market="JP",
+        buy=ImportFillPreviewRead(date=buy_lot.date, price=float(buy_lot.price), qty=matched_qty, fee=buy_fee),
+        sell=ImportFillPreviewRead(date=sell.date, price=float(sell.price), qty=matched_qty, fee=sell_fee),
+        source_lines=sorted(set([*buy_lot.lines, *sell.lines])),
+        already_imported=False,
+        is_partial_exit=is_partial_exit,
+        remaining_qty_after_sell=max(0, remaining_qty_after_sell),
+    )
+
+
+def _candidate_from_open_lot(buy_lot: _OpenLot, *, is_partial_exit: bool) -> ImportTradeCandidateRead:
+    sequence = buy_lot.next_sequence
+    buy_lot.next_sequence += 1
+    return ImportTradeCandidateRead(
+        source_signature=_candidate_signature(
+            buy_lot.symbol,
+            buy_lot.date,
+            buy_lot.remaining_qty,
+            buy_lot.price,
+            buy_lot.remaining_fee,
+            buy_lot.source_position_key,
+            sequence,
+            buy_lot.row_signatures,
+        ),
+        source_position_key=buy_lot.source_position_key,
+        source_lot_sequence=sequence,
+        symbol=buy_lot.symbol,
+        name=buy_lot.name or buy_lot.symbol,
+        market="JP",
+        buy=ImportFillPreviewRead(
+            date=buy_lot.date,
+            price=float(buy_lot.price),
+            qty=buy_lot.remaining_qty,
+            fee=buy_lot.remaining_fee,
+        ),
+        sell=None,
+        source_lines=sorted(buy_lot.lines),
+        already_imported=False,
+        is_partial_exit=is_partial_exit,
+        remaining_qty_after_sell=buy_lot.remaining_qty,
+    )
 
 
 def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCandidateRead], list[ImportIssueRead], list[ImportIssueRead]]:
@@ -249,10 +389,23 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
         by_symbol.setdefault(row.symbol, []).append(row)
 
     for symbol, items in by_symbol.items():
-        open_buys: list[_AggregatedTrade] = []
+        open_buys: list[_OpenLot] = []
         for item in sorted(items, key=lambda row: (row.date, 0 if row.side == "buy" else 1)):
             if item.side == "buy":
-                open_buys.append(item)
+                open_buys.append(
+                    _OpenLot(
+                        symbol=item.symbol,
+                        name=item.name,
+                        date=item.date,
+                        qty=item.qty,
+                        price=item.price,
+                        remaining_qty=item.qty,
+                        remaining_fee=item.fee,
+                        lines=item.lines,
+                        row_signatures=item.row_signatures,
+                        source_position_key=_position_key(item),
+                    )
+                )
                 continue
 
             if not open_buys:
@@ -265,43 +418,64 @@ def _pair_round_trips(rows: list[_AggregatedTrade]) -> tuple[list[ImportTradeCan
                 )
                 continue
 
-            buy = open_buys.pop(0)
-            if buy.qty != item.qty:
-                errors.append(
-                    ImportIssueRead(
-                        line=(item.lines[0] if item.lines else buy.lines[0] if buy.lines else None),
-                        code="partial_round_trip_unsupported",
-                        message=(
-                            f"{symbol} は購入数量 {buy.qty} 株と売却数量 {item.qty} 株が一致せず、"
-                            "部分利確または分割約定のためMVPでは自動取込できません。"
-                        ),
+            remaining_sell_qty = item.qty
+            remaining_sell_fee = item.fee
+
+            while remaining_sell_qty > 0:
+                if not open_buys:
+                    errors.append(
+                        ImportIssueRead(
+                            line=item.lines[0] if item.lines else None,
+                            code="sell_qty_exceeds_open_position",
+                            message=(
+                                f"{symbol} は売却数量 {item.qty} 株に対して保有数量が不足しています。"
+                                "CSV の期間不足または信用売り混在の可能性があります。"
+                            ),
+                        )
+                    )
+                    break
+
+                buy_lot = open_buys[0]
+                lot_qty_before = buy_lot.remaining_qty
+                sell_qty_before = remaining_sell_qty
+                matched_qty = min(lot_qty_before, sell_qty_before)
+                buy_fee_portion = _allocate_fee_portion(buy_lot.remaining_fee, matched_qty, lot_qty_before)
+                sell_fee_portion = _allocate_fee_portion(remaining_sell_fee, matched_qty, sell_qty_before)
+                remaining_after_sell = max(0, lot_qty_before - matched_qty)
+                is_partial_exit = buy_lot.qty != matched_qty or item.qty != matched_qty
+
+                candidates.append(
+                    _candidate_from_buy_sell(
+                        buy_lot,
+                        item,
+                        matched_qty,
+                        buy_fee_portion,
+                        sell_fee_portion,
+                        is_partial_exit=is_partial_exit,
+                        remaining_qty_after_sell=remaining_after_sell,
                     )
                 )
-                continue
 
-            candidates.append(
-                ImportTradeCandidateRead(
-                    source_signature=_candidate_signature(buy, item),
-                    symbol=symbol,
-                    name=buy.name or item.name or symbol,
-                    market="JP",
-                    buy=ImportFillPreviewRead(date=buy.date, price=float(buy.price), qty=buy.qty, fee=buy.fee),
-                    sell=ImportFillPreviewRead(date=item.date, price=float(item.price), qty=item.qty, fee=item.fee),
-                    source_lines=sorted(set([*buy.lines, *item.lines])),
-                    already_imported=False,
-                )
-            )
+                buy_lot.remaining_qty -= matched_qty
+                buy_lot.remaining_fee = max(0, buy_lot.remaining_fee - buy_fee_portion)
+                remaining_sell_qty -= matched_qty
+                remaining_sell_fee = max(0, remaining_sell_fee - sell_fee_portion)
 
-        for buy in open_buys:
-            skipped.append(
-                ImportIssueRead(
-                    line=buy.lines[0] if buy.lines else None,
-                    code="open_position_skipped",
-                    message=f"{buy.symbol} は未決済のため、今回の取込対象から外しました。",
-                )
-            )
+                if buy_lot.remaining_qty <= 0:
+                    open_buys.pop(0)
 
-    candidates.sort(key=lambda item: (item.buy.date, item.symbol, item.sell.date))
+        for buy_lot in open_buys:
+            candidates.append(_candidate_from_open_lot(buy_lot, is_partial_exit=buy_lot.remaining_qty != buy_lot.qty))
+
+    candidates.sort(
+        key=lambda item: (
+            item.buy.date,
+            item.symbol,
+            0 if item.sell is not None else 1,
+            item.sell.date if item.sell is not None else "",
+            item.source_lot_sequence,
+        )
+    )
     return candidates, skipped, errors
 
 

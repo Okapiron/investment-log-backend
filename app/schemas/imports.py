@@ -17,13 +17,17 @@ class ImportFillPreviewRead(BaseModel):
 
 class ImportTradeCandidateRead(BaseModel):
     source_signature: str
+    source_position_key: str
+    source_lot_sequence: int = Field(ge=1)
     symbol: str
     name: Optional[str] = None
     market: Literal["JP"] = "JP"
     buy: ImportFillPreviewRead
-    sell: ImportFillPreviewRead
+    sell: Optional[ImportFillPreviewRead] = None
     source_lines: list[int] = Field(default_factory=list)
     already_imported: bool = False
+    is_partial_exit: bool = False
+    remaining_qty_after_sell: int = Field(default=0, ge=0)
 
 
 class ImportIssueRead(BaseModel):
@@ -52,8 +56,10 @@ class RakutenImportCommitRequest(BaseModel):
 class RakutenImportCommitResponse(BaseModel):
     broker: Literal["rakuten"]
     created_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
     skipped_count: int = Field(ge=0)
     error_count: int = Field(ge=0)
     created_trade_ids: list[int]
+    updated_trade_ids: list[int] = Field(default_factory=list)
     skipped: list[ImportIssueRead]
     errors: list[ImportIssueRead]

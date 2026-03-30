@@ -62,11 +62,49 @@ def _ensure_invite_code_columns() -> None:
             conn.execute(text("CREATE INDEX idx_invite_codes_used_at ON invite_codes (used_at)"))
 
 
+def _ensure_trade_import_lineage_columns() -> None:
+    # Backward-compatible schema patch for existing beta DBs.
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "trade_import_records" not in inspector.get_table_names():
+            return
+
+        cols = {c.get("name") for c in inspector.get_columns("trade_import_records")}
+        if "source_position_key" not in cols:
+            conn.execute(text("ALTER TABLE trade_import_records ADD COLUMN source_position_key VARCHAR"))
+        if "source_lot_sequence" not in cols:
+            conn.execute(text("ALTER TABLE trade_import_records ADD COLUMN source_lot_sequence INTEGER"))
+        if "import_state" not in cols:
+            conn.execute(
+                text("ALTER TABLE trade_import_records ADD COLUMN import_state VARCHAR NOT NULL DEFAULT 'closed_round_trip'")
+            )
+        if "is_partial_exit" not in cols:
+            conn.execute(text("ALTER TABLE trade_import_records ADD COLUMN is_partial_exit BOOLEAN NOT NULL DEFAULT FALSE"))
+
+        conn.execute(
+            text(
+                "UPDATE trade_import_records "
+                "SET import_state = 'closed_round_trip' "
+                "WHERE import_state IS NULL OR import_state = ''"
+            )
+        )
+
+        indexes = {i.get("name") for i in inspector.get_indexes("trade_import_records")}
+        if "idx_trade_import_records_position_state" not in indexes:
+            conn.execute(
+                text(
+                    "CREATE INDEX idx_trade_import_records_position_state "
+                    "ON trade_import_records (source_position_key, import_state)"
+                )
+            )
+
+
 def _run_startup_tasks() -> None:
     _validate_runtime_config()
     Base.metadata.create_all(bind=engine)
     _ensure_trade_user_id_column()
     _ensure_invite_code_columns()
+    _ensure_trade_import_lineage_columns()
 
 
 @asynccontextmanager

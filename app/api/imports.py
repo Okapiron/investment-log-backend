@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
 from app.core.rakuten_csv import parse_rakuten_domestic_csv
-from app.crud.trades import create_trade_with_fills
+from app.crud.trades import create_trade_with_fills, fetch_trade, update_trade_with_fills
 from app.db.models import TradeImportRecord
 from app.schemas.imports import (
     ImportIssueRead,
@@ -16,7 +16,7 @@ from app.schemas.imports import (
     RakutenImportPreviewRequest,
     RakutenImportPreviewResponse,
 )
-from app.schemas.trade import FillInput, TradeCreate
+from app.schemas.trade import FillInput, TradeCreate, TradeUpdate
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -40,6 +40,78 @@ def _mark_existing_signatures(db: Session, preview: RakutenImportPreviewResponse
     return preview
 
 
+def _build_trade_create(item) -> TradeCreate:
+    fills = [
+        FillInput(
+            side="buy",
+            date=item.buy.date,
+            price=int(item.buy.price),
+            qty=item.buy.qty,
+            fee=item.buy.fee,
+        )
+    ]
+    if item.sell is not None:
+        fills.append(
+            FillInput(
+                side="sell",
+                date=item.sell.date,
+                price=int(item.sell.price),
+                qty=item.sell.qty,
+                fee=item.sell.fee,
+            )
+        )
+    return TradeCreate(
+        market="JP",
+        symbol=item.symbol,
+        name=item.name,
+        review_done=False,
+        fills=fills,
+    )
+
+
+def _build_trade_update(item) -> TradeUpdate:
+    fills = [
+        FillInput(
+            side="buy",
+            date=item.buy.date,
+            price=int(item.buy.price),
+            qty=item.buy.qty,
+            fee=item.buy.fee,
+        )
+    ]
+    if item.sell is not None:
+        fills.append(
+            FillInput(
+                side="sell",
+                date=item.sell.date,
+                price=int(item.sell.price),
+                qty=item.sell.qty,
+                fee=item.sell.fee,
+            )
+        )
+    return TradeUpdate(
+        fills=fills,
+        notes_sell=None,
+        notes_review=None,
+        rating=None,
+        review_done=False,
+        reviewed_at=None,
+    )
+
+
+def _find_open_import_record(db: Session, item) -> Optional[TradeImportRecord]:
+    if item.sell is None:
+        return None
+    return db.scalar(
+        select(TradeImportRecord)
+        .where(
+            TradeImportRecord.source_position_key == item.source_position_key,
+            TradeImportRecord.import_state == "open_remaining",
+        )
+        .order_by(TradeImportRecord.id.asc())
+    )
+
+
 @router.post("/rakuten-jp/preview", response_model=RakutenImportPreviewResponse)
 def preview_rakuten_jp_import(
     payload: RakutenImportPreviewRequest,
@@ -59,6 +131,7 @@ def commit_rakuten_jp_import(
 ):
     user_id = _scoped_user_id(claims)
     created_trade_ids: list[int] = []
+    updated_trade_ids: list[int] = []
     skipped: list[ImportIssueRead] = []
     errors: list[ImportIssueRead] = []
 
@@ -75,37 +148,32 @@ def commit_rakuten_jp_import(
             continue
 
         try:
-            trade = create_trade_with_fills(
-                db,
-                TradeCreate(
-                    market="JP",
-                    symbol=item.symbol,
-                    name=item.name,
-                    fills=[
-                        FillInput(
-                            side="buy",
-                            date=item.buy.date,
-                            price=int(item.buy.price),
-                            qty=item.buy.qty,
-                            fee=item.buy.fee,
-                        ),
-                        FillInput(
-                            side="sell",
-                            date=item.sell.date,
-                            price=int(item.sell.price),
-                            qty=item.sell.qty,
-                            fee=item.sell.fee,
-                        ),
-                    ],
-                ),
-                user_id=user_id,
-            )
+            existing_open_record = _find_open_import_record(db, item)
+            if existing_open_record is not None and existing_open_record.trade_id is not None:
+                existing_trade = fetch_trade(db, int(existing_open_record.trade_id), user_id=user_id)
+                if existing_trade is not None:
+                    update_trade_with_fills(db, existing_trade, _build_trade_update(item))
+                    existing_open_record.source_name = payload.filename
+                    existing_open_record.source_signature = item.source_signature
+                    existing_open_record.source_position_key = item.source_position_key
+                    existing_open_record.source_lot_sequence = item.source_lot_sequence
+                    existing_open_record.import_state = "closed_round_trip"
+                    existing_open_record.is_partial_exit = bool(item.is_partial_exit)
+                    db.commit()
+                    updated_trade_ids.append(int(existing_trade.id))
+                    continue
+
+            trade = create_trade_with_fills(db, _build_trade_create(item), user_id=user_id)
             db.flush()
             db.add(
                 TradeImportRecord(
                     broker="rakuten",
                     source_name=payload.filename,
                     source_signature=item.source_signature,
+                    source_position_key=item.source_position_key,
+                    source_lot_sequence=item.source_lot_sequence,
+                    import_state="closed_round_trip" if item.sell is not None else "open_remaining",
+                    is_partial_exit=bool(item.is_partial_exit),
                     trade_id=trade.id,
                 )
             )
@@ -125,9 +193,11 @@ def commit_rakuten_jp_import(
     return RakutenImportCommitResponse(
         broker="rakuten",
         created_count=len(created_trade_ids),
+        updated_count=len(updated_trade_ids),
         skipped_count=len(skipped),
         error_count=len(errors),
         created_trade_ids=created_trade_ids,
+        updated_trade_ids=updated_trade_ids,
         skipped=skipped,
         errors=errors,
     )

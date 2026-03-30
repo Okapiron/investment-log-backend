@@ -81,6 +81,7 @@ class TradeRead(BaseModel):
     profit_currency: str
     holding_days: Optional[int]
     is_open: bool
+    is_partial_exit: bool = False
 
 
 class TradeListStatsRead(BaseModel):

@@ -1513,7 +1513,7 @@ def test_rakuten_import_commit_skips_duplicate_signature(client):
     assert second.json()["skipped_count"] == 1
 
 
-def test_rakuten_import_preview_reports_partial_round_trip(client):
+def test_rakuten_import_preview_and_commit_support_partial_exit(client):
     csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
 2026/03/01,9432,ＮＴＴ,買,200,150,0,現物
 2026/03/05,9432,ＮＴＴ,売,100,160,0,現物
@@ -1525,9 +1525,105 @@ def test_rakuten_import_preview_reports_partial_round_trip(client):
     )
     assert preview.status_code == 200
     body = preview.json()
-    assert body["candidate_count"] == 0
-    assert body["error_count"] == 1
-    assert body["errors"][0]["code"] == "partial_round_trip_unsupported"
+    assert body["candidate_count"] == 2
+    assert body["error_count"] == 0
+    assert body["skipped_count"] == 0
+
+    closed = next(item for item in body["candidates"] if item["sell"] is not None)
+    open_item = next(item for item in body["candidates"] if item["sell"] is None)
+    assert closed["buy"]["qty"] == 100
+    assert closed["sell"]["qty"] == 100
+    assert closed["is_partial_exit"] is True
+    assert closed["remaining_qty_after_sell"] == 100
+    assert open_item["buy"]["qty"] == 100
+    assert open_item["is_partial_exit"] is True
+
+    commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten.csv", "items": body["candidates"]},
+    )
+    assert commit.status_code == 200
+    commit_body = commit.json()
+    assert commit_body["created_count"] == 2
+    assert commit_body["updated_count"] == 0
+    assert commit_body["error_count"] == 0
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    items = trades.json()["items"]
+    assert len(items) == 2
+    assert sum(1 for item in items if item["is_open"]) == 1
+    assert sum(1 for item in items if item["is_partial_exit"]) == 2
+
+
+def test_rakuten_import_reimport_closes_existing_open_remaining(client):
+    first_csv = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,9432,ＮＴＴ,買,200,150,0,現物
+2026/03/05,9432,ＮＴＴ,売,100,160,0,現物
+"""
+    wider_csv = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,9432,ＮＴＴ,買,200,150,0,現物
+2026/03/05,9432,ＮＴＴ,売,100,160,0,現物
+2026/03/20,9432,ＮＴＴ,売,100,170,0,現物
+"""
+
+    preview_first = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_partial.csv", "content": first_csv},
+    )
+    assert preview_first.status_code == 200
+    commit_first = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten_partial.csv", "items": preview_first.json()["candidates"]},
+    )
+    assert commit_first.status_code == 200
+    assert commit_first.json()["created_count"] == 2
+
+    preview_wider = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_wider.csv", "content": wider_csv},
+    )
+    assert preview_wider.status_code == 200
+    wider_body = preview_wider.json()
+    assert wider_body["candidate_count"] == 2
+    assert sum(1 for item in wider_body["candidates"] if item["already_imported"]) == 1
+
+    commit_wider = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten_wider.csv", "items": wider_body["candidates"]},
+    )
+    assert commit_wider.status_code == 200
+    commit_wider_body = commit_wider.json()
+    assert commit_wider_body["created_count"] == 0
+    assert commit_wider_body["updated_count"] == 1
+    assert commit_wider_body["skipped_count"] == 1
+    assert commit_wider_body["error_count"] == 0
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    items = trades.json()["items"]
+    assert len(items) == 2
+    assert all(item["is_open"] is False for item in items)
+    assert sorted((item["closed_at"] for item in items if item["closed_at"])) == ["2026-03-05", "2026-03-20"]
+
+
+def test_rakuten_import_preview_supports_two_closed_trades_from_split_exit(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,9432,ＮＴＴ,買,200,150,0,現物
+2026/03/05,9432,ＮＴＴ,売,100,160,0,現物
+2026/03/20,9432,ＮＴＴ,売,100,170,0,現物
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 2
+    assert body["error_count"] == 0
+    assert all(item["sell"] is not None for item in body["candidates"])
+    assert [item["sell"]["date"] for item in body["candidates"]] == ["2026-03-05", "2026-03-20"]
 
 
 def test_rakuten_import_preview_and_commit_support_margin_long(client):

@@ -17,7 +17,7 @@ from app.crud.trades import (
     review_completion_missing_items,
     update_trade_with_fills,
 )
-from app.db.models import Fill, Trade
+from app.db.models import Fill, Trade, TradeImportRecord
 from app.schemas.trade import FillRead, TradeCreate, TradeListRead, TradeListStatsRead, TradeRead, TradeUpdate
 
 router = APIRouter(prefix="/trades", tags=["trades"])
@@ -32,7 +32,19 @@ def _scoped_user_id(claims: dict) -> Optional[str]:
     return sub
 
 
-def _to_trade_read(trade: Trade) -> TradeRead:
+def _load_partial_exit_flags(db: Session, trade_ids: list[int]) -> dict[int, bool]:
+    if not trade_ids:
+        return {}
+    rows = db.execute(
+        select(TradeImportRecord.trade_id, TradeImportRecord.is_partial_exit).where(
+            TradeImportRecord.trade_id.in_(trade_ids),
+            TradeImportRecord.is_partial_exit.is_(True),
+        )
+    ).all()
+    return {int(trade_id): bool(is_partial_exit) for trade_id, is_partial_exit in rows if trade_id is not None}
+
+
+def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False) -> TradeRead:
     fills = sorted(trade.fills, key=lambda x: x.side)
     fill_map = {fill.side: fill for fill in trade.fills}
     buy = fill_map.get("buy")
@@ -86,6 +98,7 @@ def _to_trade_read(trade: Trade) -> TradeRead:
         profit_currency=profit_currency,
         holding_days=holding_days,
         is_open=is_open,
+        is_partial_exit=bool(is_partial_exit),
     )
 
 
@@ -280,7 +293,9 @@ def list_trades(
     if to and not win_to:
         win_to = to
 
-    trades = [_to_trade_read(trade) for trade in list(db.scalars(stmt).all())]
+    trade_models = list(db.scalars(stmt).all())
+    partial_flags = _load_partial_exit_flags(db, [int(trade.id) for trade in trade_models])
+    trades = [_to_trade_read(trade, is_partial_exit=partial_flags.get(int(trade.id), False)) for trade in trade_models]
 
     q_lower = (q or "").strip().lower()
     memo_lower = (memo or "").strip().lower()
@@ -483,7 +498,8 @@ def create_trade(
     reloaded = fetch_trade(db, trade.id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    return _to_trade_read(reloaded)
+    partial_flags = _load_partial_exit_flags(db, [int(reloaded.id)])
+    return _to_trade_read(reloaded, is_partial_exit=partial_flags.get(int(reloaded.id), False))
 
 
 @router.get("/{trade_id}", response_model=TradeRead)
@@ -496,7 +512,8 @@ def get_trade(
     trade = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if trade is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    return _to_trade_read(trade)
+    partial_flags = _load_partial_exit_flags(db, [int(trade.id)])
+    return _to_trade_read(trade, is_partial_exit=partial_flags.get(int(trade.id), False))
 
 
 @router.patch("/{trade_id}", response_model=TradeRead)
@@ -536,7 +553,8 @@ def update_trade(
     reloaded = fetch_trade(db, trade_id, user_id=scoped_user_id)
     if reloaded is None:
         raise HTTPException(status_code=404, detail="trade not found")
-    return _to_trade_read(reloaded)
+    partial_flags = _load_partial_exit_flags(db, [int(reloaded.id)])
+    return _to_trade_read(reloaded, is_partial_exit=partial_flags.get(int(reloaded.id), False))
 
 
 @router.delete("/{trade_id}", status_code=204)
