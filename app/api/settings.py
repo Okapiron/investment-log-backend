@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
 from app.core.runtime_config import evaluate_runtime_config_issues
-from app.db.models import Fill, InviteCode, Trade
+from app.db.models import Fill, InviteCode, Trade, TradeImportRecord
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -262,23 +262,41 @@ def delete_my_account_data(
         raise HTTPException(status_code=400, detail="confirm_text=DELETE is required")
 
     scoped_user_id = _scoped_user_id(claims)
-    if scoped_user_id is None:
+    private_mode_delete_all = scoped_user_id is None and bool(settings.private_mode_enabled) and not bool(settings.auth_enabled)
+    if scoped_user_id is None and not private_mode_delete_all:
         raise HTTPException(status_code=403, detail="auth must be enabled to delete account data")
 
-    to_delete = list(db.scalars(select(Trade.id).where(Trade.user_id == scoped_user_id)).all())
+    trade_stmt = select(Trade.id)
+    if scoped_user_id is not None:
+        trade_stmt = trade_stmt.where(Trade.user_id == scoped_user_id)
+    to_delete = list(db.scalars(trade_stmt).all())
     deleted_count = len(to_delete)
+    deleted_import_records = 0
     if deleted_count > 0:
+        deleted_import_records = (
+            db.query(TradeImportRecord).filter(TradeImportRecord.trade_id.in_(to_delete)).delete(synchronize_session=False)
+            or 0
+        )
         db.query(Fill).filter(Fill.trade_id.in_(to_delete)).delete(synchronize_session=False)
         db.query(Trade).filter(Trade.id.in_(to_delete)).delete(synchronize_session=False)
+    if private_mode_delete_all:
+        deleted_import_records += (
+            db.query(TradeImportRecord)
+            .filter(TradeImportRecord.trade_id.is_(None))
+            .delete(synchronize_session=False)
+            or 0
+        )
 
-    invite_rows = list(
-        db.scalars(
-            select(InviteCode).where(
-                InviteCode.used_by_user_id == scoped_user_id,
-                InviteCode.used_count > 0,
-            )
-        ).all()
-    )
+    invite_rows = []
+    if scoped_user_id is not None:
+        invite_rows = list(
+            db.scalars(
+                select(InviteCode).where(
+                    InviteCode.used_by_user_id == scoped_user_id,
+                    InviteCode.used_count > 0,
+                )
+            ).all()
+        )
     for row in invite_rows:
         # Keep one-time code consumption history, but detach deleted user reference.
         row.used_by_user_id = None
@@ -290,6 +308,7 @@ def delete_my_account_data(
     return JSONResponse(
         {
             "deleted_trades": deleted_count,
+            "deleted_import_records": deleted_import_records,
             "anonymized_invites": anonymized_invites,
             "deleted_auth_user": deleted_auth_user,
             "auth_delete_error": auth_delete_error,

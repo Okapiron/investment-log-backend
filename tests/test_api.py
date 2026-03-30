@@ -7,13 +7,13 @@ import time
 from typing import Optional
 from urllib.error import HTTPError
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core import analysis as analysis_core
 from app.core import price_provider as price_provider_core
 from app.core.invites import hash_invite_code
-from app.db.models import InviteCode
+from app.db.models import InviteCode, TradeImportRecord
 from app.main import app, get_runtime_config_issues
 
 
@@ -1456,6 +1456,81 @@ def test_private_mode_blocks_api_without_secret(client):
 
         blocked_prices = client.get("/api/v1/prices", params={"market": "US", "symbol": "AAPL"})
         assert blocked_prices.status_code == 403
+    finally:
+        settings.private_mode_enabled = prev_enabled
+        settings.private_mode_secret = prev_secret
+
+
+def test_private_mode_delete_all_data_clears_trades_and_import_records(client):
+    prev_enabled = settings.private_mode_enabled
+    prev_secret = settings.private_mode_secret
+
+    try:
+        settings.private_mode_enabled = True
+        settings.private_mode_secret = "test-secret"
+        headers = {"X-TradeTrace-Secret": "test-secret"}
+
+        created = client.post(
+            "/api/v1/trades",
+            json={
+                "market": "JP",
+                "symbol": "7203",
+                "fills": [
+                    {"side": "buy", "date": "2026-03-01", "price": 2500, "qty": 1, "fee": 0},
+                    {"side": "sell", "date": "2026-03-10", "price": 2600, "qty": 1, "fee": 0},
+                ],
+            },
+            headers=headers,
+        )
+        assert created.status_code == 201
+        trade_id = created.json()["id"]
+
+        session_local = app.state.testing_session_local
+        with session_local() as db:
+            db.add(
+                TradeImportRecord(
+                    broker="rakuten",
+                    source_name="tradehistory.csv",
+                    source_signature="sig-1",
+                    source_position_key="pos-1",
+                    source_lot_sequence=1,
+                    import_state="closed_round_trip",
+                    is_partial_exit=False,
+                    trade_id=trade_id,
+                )
+            )
+            db.add(
+                TradeImportRecord(
+                    broker="rakuten",
+                    source_name="tradehistory.csv",
+                    source_signature="sig-orphan",
+                    source_position_key="pos-orphan",
+                    source_lot_sequence=2,
+                    import_state="open_remaining",
+                    is_partial_exit=True,
+                    trade_id=None,
+                )
+            )
+            db.commit()
+
+        deleted = client.delete(
+            "/api/v1/settings/me",
+            params={"confirm": "true", "confirm_text": "DELETE"},
+            headers=headers,
+        )
+        assert deleted.status_code == 200
+        body = deleted.json()
+        assert body["deleted_trades"] == 1
+        assert body["deleted_import_records"] == 2
+        assert body["anonymized_invites"] == 0
+
+        list_after = client.get("/api/v1/trades", headers=headers)
+        assert list_after.status_code == 200
+        assert list_after.json()["total"] == 0
+
+        with session_local() as db:
+            remaining = db.scalar(select(func.count()).select_from(TradeImportRecord))
+            assert int(remaining or 0) == 0
     finally:
         settings.private_mode_enabled = prev_enabled
         settings.private_mode_secret = prev_secret
