@@ -1411,6 +1411,53 @@ def test_rakuten_import_preview_reports_partial_round_trip(client):
     assert body["errors"][0]["code"] == "partial_round_trip_unsupported"
 
 
+def test_rakuten_import_preview_and_commit_support_margin_long(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,7203,トヨタ自動車,買,100,2500,275,信用新規買
+2026/03/10,7203,トヨタ自動車,売,100,2600,275,信用返済売
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_margin_long.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 1
+    assert body["skipped_count"] == 0
+    assert body["error_count"] == 0
+    assert body["candidates"][0]["symbol"] == "7203"
+    assert body["candidates"][0]["buy"]["price"] == 2500
+    assert body["candidates"][0]["sell"]["price"] == 2600
+
+    commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten_margin_long.csv", "items": body["candidates"]},
+    )
+    assert commit.status_code == 200
+    commit_body = commit.json()
+    assert commit_body["created_count"] == 1
+    assert commit_body["error_count"] == 0
+
+
+def test_rakuten_import_preview_skips_margin_short_rows(client):
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,7203,トヨタ自動車,売,100,2500,275,信用新規売
+2026/03/10,7203,トヨタ自動車,買,100,2400,275,信用返済買
+"""
+
+    preview = client.post(
+        "/api/v1/imports/rakuten-jp/preview",
+        json={"filename": "rakuten_margin_short.csv", "content": csv_content},
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["candidate_count"] == 0
+    assert body["error_count"] == 0
+    assert body["skipped_count"] == 2
+    assert all(item["code"] == "unsupported_product" for item in body["skipped"])
+
+
 def test_prices_route_returns_bars_from_yahoo_provider(client, monkeypatch):
     prev_provider = settings.price_provider
     prev_base_url = settings.yahoo_chart_base_url

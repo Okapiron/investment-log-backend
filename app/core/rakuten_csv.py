@@ -123,7 +123,13 @@ def _is_supported_domestic_stock(row: dict[str, str], headers: dict[str, str]) -
     trade_type = _clean_text(row.get(headers.get("trade_type", ""), ""))
     market = _clean_text(row.get(headers.get("market", ""), ""))
     if trade_type:
-        if "信用" in trade_type or "先物" in trade_type or "オプション" in trade_type or "投信" in trade_type:
+        if "先物" in trade_type or "オプション" in trade_type or "投信" in trade_type:
+            return False
+        if "信用" in trade_type:
+            if any(marker in trade_type for marker in ("売建", "新規売", "返済買")):
+                return False
+            if any(marker in trade_type for marker in ("買建", "新規買", "返済売")):
+                return True
             return False
         if "現物" in trade_type:
             return True
@@ -292,7 +298,7 @@ def parse_rakuten_domestic_csv(content: str, filename: Optional[str] = None) -> 
                 ImportIssueRead(
                     line=index,
                     code="unsupported_product",
-                    message="国内株現物以外の行はMVP対象外のためスキップしました。",
+                    message="国内株の現物・信用買い以外の行はMVP対象外のためスキップしました。",
                 )
             )
             continue
