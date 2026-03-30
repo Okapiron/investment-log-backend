@@ -99,6 +99,9 @@ class RakutenAuditSymbolDiffRead(BaseModel):
 
 
 class RakutenImportAuditResponse(BaseModel):
+    preview_candidate_count: int = Field(ge=0, default=0)
+    tt_reconstructed_count: int = Field(ge=0, default=0)
+    rakuten_row_count: int = Field(ge=0, default=0)
     tt_total_jpy: float
     rakuten_total_jpy: float
     gap_jpy: float

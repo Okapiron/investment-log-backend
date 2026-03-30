@@ -970,6 +970,9 @@ def audit_rakuten_tradehistory_against_realized(
     top_symbol_diffs.sort(key=lambda item: abs(float(item["gap_jpy"])), reverse=True)
 
     return RakutenImportAuditResponse(
+        preview_candidate_count=preview.candidate_count,
+        tt_reconstructed_count=len(tt_rows),
+        rakuten_row_count=len(realized_rows),
         tt_total_jpy=tt_total,
         rakuten_total_jpy=rakuten_total,
         gap_jpy=gap,

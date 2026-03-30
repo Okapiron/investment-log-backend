@@ -70,6 +70,36 @@ def _candidate_fill_fee_total(fill) -> int:
     return int(getattr(fill, "fee", 0) or 0)
 
 
+def _candidate_fallback_key(item):
+    open_fill = _candidate_open_fill(item)
+    if open_fill is None:
+        return None
+    close_fill = _candidate_close_fill(item)
+    return (
+        item.market,
+        item.symbol,
+        item.position_side,
+        open_fill.date,
+        int(open_fill.qty),
+        str(_candidate_fill_price(open_fill)),
+        int(_candidate_fill_fee_total(open_fill)),
+        close_fill.date if close_fill is not None else "",
+        int(close_fill.qty) if close_fill is not None else 0,
+        str(_candidate_fill_price(close_fill)) if close_fill is not None else "",
+        int(_candidate_fill_fee_total(close_fill)) if close_fill is not None else 0,
+    )
+
+
+def _fallback_collision_counts(items) -> dict[tuple, int]:
+    counts: dict[tuple, int] = {}
+    for item in items:
+        key = _candidate_fallback_key(item)
+        if key is None:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def _record_query(stmt, *, user_id: Optional[str], join_trade: bool = False):
     if user_id is None:
         return stmt
@@ -78,7 +108,13 @@ def _record_query(stmt, *, user_id: Optional[str], join_trade: bool = False):
     return stmt.where(Trade.user_id == user_id)
 
 
-def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -> Optional[TradeImportRecord]:
+def _find_existing_import_record(
+    db: Session,
+    item,
+    *,
+    user_id: Optional[str],
+    allow_fallback: bool = True,
+) -> Optional[TradeImportRecord]:
     exact = _record_query(
         select(TradeImportRecord).where(TradeImportRecord.source_signature == item.source_signature),
         user_id=user_id,
@@ -97,6 +133,9 @@ def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -
     record = db.scalar(lineage)
     if record is not None:
         return record
+
+    if not allow_fallback:
+        return None
 
     open_fill = _candidate_open_fill(item)
     close_fill = _candidate_close_fill(item)
@@ -138,15 +177,21 @@ def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -
             close_fill_alias.fee_total_jpy == _candidate_fill_fee_total(close_fill),
         )
 
-    fallback = fallback.order_by(TradeImportRecord.id.asc())
+    fallback = fallback.order_by(TradeImportRecord.id.asc()).limit(2)
     if user_id is not None:
         fallback = fallback.where(Trade.user_id == user_id)
-    return db.scalar(fallback)
+    matches = list(db.scalars(fallback).all())
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 def _mark_existing_candidates(db: Session, preview: RakutenImportPreviewResponse, *, user_id: Optional[str]) -> RakutenImportPreviewResponse:
+    fallback_counts = _fallback_collision_counts(preview.candidates)
     for item in preview.candidates:
-        item.already_imported = _find_existing_import_record(db, item, user_id=user_id) is not None
+        fallback_key = _candidate_fallback_key(item)
+        allow_fallback = fallback_key is None or fallback_counts.get(fallback_key, 0) <= 1
+        item.already_imported = _find_existing_import_record(db, item, user_id=user_id, allow_fallback=allow_fallback) is not None
     return preview
 
 
@@ -267,6 +312,7 @@ def commit_rakuten_jp_import(
     claims: dict = Depends(require_invited_auth),
 ):
     user_id = _scoped_user_id(claims)
+    fallback_counts = _fallback_collision_counts(payload.items)
     created_trade_ids: list[int] = []
     updated_trade_ids: list[int] = []
     skipped: list[ImportIssueRead] = []
@@ -274,7 +320,9 @@ def commit_rakuten_jp_import(
 
     for item in payload.items:
         try:
-            existing_record = _find_existing_import_record(db, item, user_id=user_id)
+            fallback_key = _candidate_fallback_key(item)
+            allow_fallback = fallback_key is None or fallback_counts.get(fallback_key, 0) <= 1
+            existing_record = _find_existing_import_record(db, item, user_id=user_id, allow_fallback=allow_fallback)
             if existing_record is not None and existing_record.trade_id is not None:
                 existing_trade = fetch_trade(db, int(existing_record.trade_id), user_id=user_id)
                 if existing_trade is not None:

@@ -1922,6 +1922,65 @@ def test_rakuten_import_open_remaining_fallback_matches_existing_trade_by_open_p
     assert buy_fill["fee_total_jpy"] == 175
 
 
+def test_rakuten_import_commit_does_not_collapse_identical_fallback_shape_sibling_lots(client):
+    items = [
+        {
+            "source_signature": "same-shape-sig-1",
+            "source_position_key": "same-shape-pos",
+            "source_lot_sequence": 1,
+            "symbol": "7014",
+            "name": "名村造船所",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2024-06-03", "price": 2411.6, "qty": 100, "fee": 0, "fee_total_jpy": 0},
+            "sell": {"date": "2024-06-04", "price": 2500, "qty": 100, "fee": 0, "fee_total_jpy": 0},
+            "source_lines": [1, 2],
+            "already_imported": False,
+            "is_partial_exit": True,
+            "remaining_qty_after_sell": 200,
+        },
+        {
+            "source_signature": "same-shape-sig-2",
+            "source_position_key": "same-shape-pos",
+            "source_lot_sequence": 2,
+            "symbol": "7014",
+            "name": "名村造船所",
+            "market": "JP",
+            "position_side": "long",
+            "buy": {"date": "2024-06-03", "price": 2411.6, "qty": 100, "fee": 0, "fee_total_jpy": 0},
+            "sell": {"date": "2024-06-04", "price": 2500, "qty": 100, "fee": 0, "fee_total_jpy": 0},
+            "source_lines": [3, 4],
+            "already_imported": False,
+            "is_partial_exit": True,
+            "remaining_qty_after_sell": 100,
+        },
+    ]
+
+    first_commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "same_shape.csv", "items": items},
+    )
+    assert first_commit.status_code == 200
+    first_body = first_commit.json()
+    assert first_body["created_count"] == 2
+    assert first_body["updated_count"] == 0
+    assert first_body["error_count"] == 0
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    assert trades.json()["total"] == 2
+
+    second_commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "same_shape.csv", "items": items},
+    )
+    assert second_commit.status_code == 200
+    second_body = second_commit.json()
+    assert second_body["created_count"] == 0
+    assert second_body["updated_count"] == 2
+    assert second_body["error_count"] == 0
+
+
 def test_rakuten_import_commit_with_wider_csv_does_not_delete_unmatched_existing_import_trade(client):
     older_csv = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
 2026/02/01,9984,ソフトバンクグループ,買,100,8000,0,現物
