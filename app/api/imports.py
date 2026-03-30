@@ -2,14 +2,14 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
 from app.core.rakuten_csv import audit_rakuten_tradehistory_against_realized, parse_rakuten_domestic_csv
 from app.crud.trades import create_trade_with_fills, fetch_trade, update_trade_with_fills
-from app.db.models import TradeImportRecord
+from app.db.models import Fill, Trade, TradeImportRecord
 from app.schemas.imports import (
     ImportIssueRead,
     RakutenImportAuditRequest,
@@ -31,15 +31,89 @@ def _scoped_user_id(claims: dict) -> Optional[str]:
     return sub or None
 
 
-def _mark_existing_signatures(db: Session, preview: RakutenImportPreviewResponse) -> RakutenImportPreviewResponse:
-    signatures = [item.source_signature for item in preview.candidates]
-    if not signatures:
-        return preview
-    existing = set(
-        db.scalars(select(TradeImportRecord.source_signature).where(TradeImportRecord.source_signature.in_(signatures))).all()
+def _candidate_open_fill(item):
+    return item.buy if item.position_side == "long" else item.sell
+
+
+def _candidate_close_fill(item):
+    return item.sell if item.position_side == "long" else item.buy
+
+
+def _candidate_qty(item) -> int:
+    open_fill = _candidate_open_fill(item)
+    close_fill = _candidate_close_fill(item)
+    return int((open_fill.qty if open_fill is not None else close_fill.qty) if (open_fill is not None or close_fill is not None) else 0)
+
+
+def _candidate_open_date(item) -> str:
+    open_fill = _candidate_open_fill(item)
+    return open_fill.date if open_fill is not None else ""
+
+
+def _candidate_close_date(item) -> str:
+    close_fill = _candidate_close_fill(item)
+    return close_fill.date if close_fill is not None else ""
+
+
+def _candidate_import_state(item) -> str:
+    return "closed_round_trip" if _candidate_close_fill(item) is not None else "open_remaining"
+
+
+def _record_query(stmt, *, user_id: Optional[str], join_trade: bool = False):
+    if user_id is None:
+        return stmt
+    if not join_trade:
+        stmt = stmt.join(Trade, Trade.id == TradeImportRecord.trade_id)
+    return stmt.where(Trade.user_id == user_id)
+
+
+def _find_existing_import_record(db: Session, item, *, user_id: Optional[str]) -> Optional[TradeImportRecord]:
+    exact = _record_query(
+        select(TradeImportRecord).where(TradeImportRecord.source_signature == item.source_signature),
+        user_id=user_id,
+    ).order_by(TradeImportRecord.id.asc())
+    record = db.scalar(exact)
+    if record is not None:
+        return record
+
+    lineage = _record_query(
+        select(TradeImportRecord).where(
+            TradeImportRecord.source_position_key == item.source_position_key,
+            TradeImportRecord.source_lot_sequence == item.source_lot_sequence,
+        ),
+        user_id=user_id,
+    ).order_by(TradeImportRecord.id.asc())
+    record = db.scalar(lineage)
+    if record is not None:
+        return record
+
+    open_fill_alias = aliased(Fill)
+    open_side = "buy" if item.position_side == "long" else "sell"
+    fallback = (
+        select(TradeImportRecord)
+        .join(Trade, Trade.id == TradeImportRecord.trade_id)
+        .join(
+            open_fill_alias,
+            and_(open_fill_alias.trade_id == Trade.id, open_fill_alias.side == open_side),
+        )
+        .where(
+            Trade.market == item.market,
+            Trade.symbol == item.symbol,
+            Trade.position_side == item.position_side,
+            Trade.opened_at == _candidate_open_date(item),
+            Trade.closed_at == _candidate_close_date(item),
+            open_fill_alias.qty == _candidate_qty(item),
+        )
+        .order_by(TradeImportRecord.id.asc())
     )
+    if user_id is not None:
+        fallback = fallback.where(Trade.user_id == user_id)
+    return db.scalar(fallback)
+
+
+def _mark_existing_candidates(db: Session, preview: RakutenImportPreviewResponse, *, user_id: Optional[str]) -> RakutenImportPreviewResponse:
     for item in preview.candidates:
-        item.already_imported = item.source_signature in existing
+        item.already_imported = _find_existing_import_record(db, item, user_id=user_id) is not None
     return preview
 
 
@@ -116,25 +190,17 @@ def _build_trade_update(item) -> TradeUpdate:
     return TradeUpdate(
         position_side=item.position_side,
         fills=fills,
-        notes_sell=None,
-        notes_review=None,
-        rating=None,
-        review_done=False,
-        reviewed_at=None,
     )
 
 
-def _find_open_import_record(db: Session, item) -> Optional[TradeImportRecord]:
-    if item.sell is None:
-        return None
-    return db.scalar(
-        select(TradeImportRecord)
-        .where(
-            TradeImportRecord.source_position_key == item.source_position_key,
-            TradeImportRecord.import_state == "open_remaining",
-        )
-        .order_by(TradeImportRecord.id.asc())
-    )
+def _sync_import_record(record: TradeImportRecord, *, filename: Optional[str], item, trade_id: int) -> None:
+    record.source_name = filename
+    record.source_signature = item.source_signature
+    record.source_position_key = item.source_position_key
+    record.source_lot_sequence = item.source_lot_sequence
+    record.import_state = _candidate_import_state(item)
+    record.is_partial_exit = bool(item.is_partial_exit)
+    record.trade_id = trade_id
 
 
 @router.post("/rakuten-jp/preview", response_model=RakutenImportPreviewResponse)
@@ -143,9 +209,9 @@ def preview_rakuten_jp_import(
     db: Session = Depends(get_session),
     claims: dict = Depends(require_invited_auth),
 ):
-    _scoped_user_id(claims)
+    user_id = _scoped_user_id(claims)
     preview = parse_rakuten_domestic_csv(payload.content, payload.filename)
-    return _mark_existing_signatures(db, preview)
+    return _mark_existing_candidates(db, preview, user_id=user_id)
 
 
 @router.post("/rakuten-jp/audit", response_model=RakutenImportAuditResponse)
@@ -174,47 +240,34 @@ def commit_rakuten_jp_import(
     errors: list[ImportIssueRead] = []
 
     for item in payload.items:
-        exists = db.scalar(select(TradeImportRecord).where(TradeImportRecord.source_signature == item.source_signature))
-        if exists is not None:
-            skipped.append(
-                ImportIssueRead(
-                    line=item.source_lines[0] if item.source_lines else None,
-                    code="duplicate_import",
-                    message=f"{item.symbol} は既に取り込み済みのためスキップしました。",
-                )
-            )
-            continue
-
         try:
-            existing_open_record = _find_open_import_record(db, item)
-            if existing_open_record is not None and existing_open_record.trade_id is not None:
-                existing_trade = fetch_trade(db, int(existing_open_record.trade_id), user_id=user_id)
+            existing_record = _find_existing_import_record(db, item, user_id=user_id)
+            if existing_record is not None and existing_record.trade_id is not None:
+                existing_trade = fetch_trade(db, int(existing_record.trade_id), user_id=user_id)
                 if existing_trade is not None:
                     update_trade_with_fills(db, existing_trade, _build_trade_update(item))
-                    existing_open_record.source_name = payload.filename
-                    existing_open_record.source_signature = item.source_signature
-                    existing_open_record.source_position_key = item.source_position_key
-                    existing_open_record.source_lot_sequence = item.source_lot_sequence
-                    existing_open_record.import_state = "closed_round_trip"
-                    existing_open_record.is_partial_exit = bool(item.is_partial_exit)
+                    _sync_import_record(existing_record, filename=payload.filename, item=item, trade_id=int(existing_trade.id))
                     db.commit()
                     updated_trade_ids.append(int(existing_trade.id))
                     continue
 
             trade = create_trade_with_fills(db, _build_trade_create(item), user_id=user_id)
             db.flush()
-            db.add(
-                TradeImportRecord(
-                    broker="rakuten",
-                    source_name=payload.filename,
-                    source_signature=item.source_signature,
-                    source_position_key=item.source_position_key,
-                    source_lot_sequence=item.source_lot_sequence,
-                    import_state="closed_round_trip" if item.sell is not None else "open_remaining",
-                    is_partial_exit=bool(item.is_partial_exit),
-                    trade_id=trade.id,
+            if existing_record is not None:
+                _sync_import_record(existing_record, filename=payload.filename, item=item, trade_id=int(trade.id))
+            else:
+                db.add(
+                    TradeImportRecord(
+                        broker="rakuten",
+                        source_name=payload.filename,
+                        source_signature=item.source_signature,
+                        source_position_key=item.source_position_key,
+                        source_lot_sequence=item.source_lot_sequence,
+                        import_state=_candidate_import_state(item),
+                        is_partial_exit=bool(item.is_partial_exit),
+                        trade_id=trade.id,
+                    )
                 )
-            )
             db.commit()
             created_trade_ids.append(int(trade.id))
         except Exception as exc:

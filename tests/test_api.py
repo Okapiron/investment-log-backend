@@ -1568,7 +1568,7 @@ def test_rakuten_import_preview_and_commit_create_trade(client):
     assert trades.json()["items"][0]["symbol"] == "7203"
 
 
-def test_rakuten_import_commit_skips_duplicate_signature(client):
+def test_rakuten_import_commit_reimports_same_csv_as_update_and_preserves_user_fields(client):
     csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
 2026/03/01,6758,ソニーグループ,買,100,3000,275,現物
 2026/03/15,6758,ソニーグループ,売,100,3200,275,現物
@@ -1581,12 +1581,47 @@ def test_rakuten_import_commit_skips_duplicate_signature(client):
     items = preview.json()["candidates"]
 
     first = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "rakuten.csv", "items": items})
-    second = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "rakuten.csv", "items": items})
     assert first.status_code == 200
-    assert second.status_code == 200
     assert first.json()["created_count"] == 1
-    assert second.json()["created_count"] == 0
-    assert second.json()["skipped_count"] == 1
+
+    trade_id = first.json()["created_trade_ids"][0]
+    edited = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={
+            "notes_buy": "長期テーマでエントリー",
+            "notes_sell": "イベント前に利確",
+            "notes_review": "次回は分割利確も検討",
+            "tags": "成長期待,成功",
+            "rating": 5,
+            "chart_image_url": "https://example.com/chart.png",
+        },
+    )
+    assert edited.status_code == 200
+    review_done = client.patch(
+        f"/api/v1/trades/{trade_id}",
+        json={"review_done": True, "reviewed_at": "2026-03-20"},
+    )
+    assert review_done.status_code == 200
+    assert review_done.json()["review_done"] is True
+
+    second = client.post("/api/v1/imports/rakuten-jp/commit", json={"filename": "rakuten.csv", "items": items})
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["created_count"] == 0
+    assert second_body["updated_count"] == 1
+    assert second_body["skipped_count"] == 0
+
+    detail = client.get(f"/api/v1/trades/{trade_id}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["notes_buy"] == "長期テーマでエントリー"
+    assert body["notes_sell"] == "イベント前に利確"
+    assert body["notes_review"] == "次回は分割利確も検討"
+    assert body["tags"] == "成長期待,成功"
+    assert body["rating"] == 5
+    assert body["review_done"] is True
+    assert body["reviewed_at"] == "2026-03-20"
+    assert body["chart_image_url"] == "https://example.com/chart.png"
 
 
 def test_rakuten_import_preview_and_commit_support_partial_exit(client):
@@ -1662,7 +1697,7 @@ def test_rakuten_import_reimport_closes_existing_open_remaining(client):
     assert preview_wider.status_code == 200
     wider_body = preview_wider.json()
     assert wider_body["candidate_count"] == 2
-    assert sum(1 for item in wider_body["candidates"] if item["already_imported"]) == 1
+    assert sum(1 for item in wider_body["candidates"] if item["already_imported"]) == 2
 
     commit_wider = client.post(
         "/api/v1/imports/rakuten-jp/commit",
@@ -1671,8 +1706,8 @@ def test_rakuten_import_reimport_closes_existing_open_remaining(client):
     assert commit_wider.status_code == 200
     commit_wider_body = commit_wider.json()
     assert commit_wider_body["created_count"] == 0
-    assert commit_wider_body["updated_count"] == 1
-    assert commit_wider_body["skipped_count"] == 1
+    assert commit_wider_body["updated_count"] == 2
+    assert commit_wider_body["skipped_count"] == 0
     assert commit_wider_body["error_count"] == 0
 
     trades = client.get("/api/v1/trades")
@@ -1681,6 +1716,76 @@ def test_rakuten_import_reimport_closes_existing_open_remaining(client):
     assert len(items) == 2
     assert all(item["is_open"] is False for item in items)
     assert sorted((item["closed_at"] for item in items if item["closed_at"])) == ["2026-03-05", "2026-03-20"]
+
+
+def test_rakuten_import_commit_with_wider_csv_does_not_delete_unmatched_existing_import_trade(client):
+    older_csv = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/02/01,9984,ソフトバンクグループ,買,100,8000,0,現物
+2026/02/10,9984,ソフトバンクグループ,売,100,8200,0,現物
+"""
+    newer_csv = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,6758,ソニーグループ,買,100,3000,0,現物
+2026/03/10,6758,ソニーグループ,売,100,3200,0,現物
+"""
+
+    preview_old = client.post("/api/v1/imports/rakuten-jp/preview", json={"filename": "older.csv", "content": older_csv})
+    assert preview_old.status_code == 200
+    commit_old = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "older.csv", "items": preview_old.json()["candidates"]},
+    )
+    assert commit_old.status_code == 200
+    assert commit_old.json()["created_count"] == 1
+
+    preview_new = client.post("/api/v1/imports/rakuten-jp/preview", json={"filename": "newer.csv", "content": newer_csv})
+    assert preview_new.status_code == 200
+    commit_new = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "newer.csv", "items": preview_new.json()["candidates"]},
+    )
+    assert commit_new.status_code == 200
+    assert commit_new.json()["created_count"] == 1
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    body = trades.json()
+    assert body["total"] == 2
+    assert sorted(item["symbol"] for item in body["items"]) == ["6758", "9984"]
+
+
+def test_rakuten_import_manual_trade_is_not_upsert_target(client):
+    manual = client.post(
+        "/api/v1/trades",
+        json={
+            "market": "JP",
+            "symbol": "7203",
+            "fills": [
+                {"side": "buy", "date": "2026-03-01", "price": 2500, "qty": 100, "fee": 0},
+                {"side": "sell", "date": "2026-03-10", "price": 2600, "qty": 100, "fee": 0},
+            ],
+        },
+    )
+    assert manual.status_code == 201
+
+    csv_content = """約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分
+2026/03/01,7203,トヨタ自動車,買,100,2500,0,現物
+2026/03/10,7203,トヨタ自動車,売,100,2600,0,現物
+"""
+    preview = client.post("/api/v1/imports/rakuten-jp/preview", json={"filename": "rakuten.csv", "content": csv_content})
+    assert preview.status_code == 200
+    assert preview.json()["candidates"][0]["already_imported"] is False
+
+    commit = client.post(
+        "/api/v1/imports/rakuten-jp/commit",
+        json={"filename": "rakuten.csv", "items": preview.json()["candidates"]},
+    )
+    assert commit.status_code == 200
+    assert commit.json()["created_count"] == 1
+    assert commit.json()["updated_count"] == 0
+
+    trades = client.get("/api/v1/trades")
+    assert trades.status_code == 200
+    assert trades.json()["total"] == 2
 
 
 def test_rakuten_import_preview_supports_two_closed_trades_from_split_exit(client):
