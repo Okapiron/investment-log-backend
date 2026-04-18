@@ -87,6 +87,17 @@ class AnalysisDataSufficiencyRead(BaseModel):
     message: str
 
 
+class AnalysisLatestImportRead(BaseModel):
+    broker: str
+    source_name: Optional[str] = None
+    imported_at: str
+    created_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
+    skipped_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    audit_gap_jpy: Optional[float] = None
+
+
 class AnalysisSummaryRead(BaseModel):
     headline_summary: Optional[str] = None
     top_improvement: Optional[AnalysisTopImprovementRead] = None
@@ -97,5 +108,7 @@ class AnalysisSummaryRead(BaseModel):
     actions: list[str]
     stats: AnalysisStatsRead
     review_gaps: list[AnalysisReviewGapRead]
+    latest_import: Optional[AnalysisLatestImportRead] = None
+    import_review_focus: list[str] = Field(default_factory=list)
     data_sufficiency: AnalysisDataSufficiencyRead
     generated_at: str

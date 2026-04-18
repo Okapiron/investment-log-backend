@@ -168,6 +168,26 @@ class TradeImportRecord(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
 
 
+class ImportSession(Base):
+    __tablename__ = "import_sessions"
+    __table_args__ = (
+        Index("idx_import_sessions_user_broker", "user_id", "broker"),
+        Index("idx_import_sessions_imported_at", "imported_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String)
+    broker: Mapped[str] = mapped_column(String, nullable=False)
+    source_name: Mapped[Optional[str]] = mapped_column(String)
+    realized_source_name: Mapped[Optional[str]] = mapped_column(String)
+    imported_at: Mapped[str] = mapped_column(String, nullable=False, default=lambda: datetime.now(timezone.utc).isoformat())
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    audit_gap_jpy: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
+
+
 class InviteCode(TimestampMixin, Base):
     __tablename__ = "invite_codes"
     __table_args__ = (

@@ -18,6 +18,7 @@ from app.schemas.analysis import (
     AnalysisDataSufficiencyRead,
     AnalysisDiagnosisCardRead,
     AnalysisHoldingBucketRead,
+    AnalysisLatestImportRead,
     AnalysisMarketStatRead,
     AnalysisReviewGapRead,
     AnalysisStatsRead,
@@ -294,6 +295,12 @@ def _trade_signature(trades: list[Trade]) -> str:
         for trade in trades
     ]
     return hashlib.sha1(json.dumps(base, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _latest_import_signature(latest_import: Optional[AnalysisLatestImportRead]) -> str:
+    if latest_import is None:
+        return "no-import"
+    return f"{latest_import.broker}:{latest_import.imported_at}:{latest_import.created_count}:{latest_import.updated_count}:{latest_import.audit_gap_jpy}"
 
 
 def _safe_excerpt(text: str, limit: int = 160) -> str:
@@ -891,12 +898,39 @@ def _generate_llm_sections(stats: AnalysisStatsRead, closed: list[ClosedTradeSna
     return summary, win_patterns[:3], loss_patterns[:3], actions[:3], user_key
 
 
-def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> AnalysisSummaryRead:
+def _import_review_focus(closed: list[ClosedTradeSnapshot], latest_import: Optional[AnalysisLatestImportRead]) -> list[str]:
+    if latest_import is None:
+        return []
+    focus: list[str] = []
+    changed = int(latest_import.created_count or 0) + int(latest_import.updated_count or 0)
+    if changed > 0:
+        focus.append(f"直近取込で追加・更新された取引が {changed} 件あります。まず大きな損失と未レビューを確認してください。")
+    if latest_import.audit_gap_jpy is not None:
+        gap = round(float(latest_import.audit_gap_jpy))
+        if abs(gap) > 0:
+            focus.append(f"実現損益CSVとの差額は {gap:+,} 円です。整合性チェックの差分銘柄を確認してください。")
+        else:
+            focus.append("実現損益CSVとの合計差額は 0 円です。分析へ進める状態です。")
+    unreviewed = [item for item in closed if not item.review_done]
+    if unreviewed:
+        focus.append(f"未レビューの決済済みトレードが {len(unreviewed)} 件あります。損益の大きい順に3件だけ見直すのがおすすめです。")
+    losses = sorted([item for item in closed if item.profit_value < 0], key=lambda item: item.profit_value)
+    if losses:
+        worst = losses[0]
+        focus.append(f"{worst.symbol} の損失トレードを優先して振り返ると、次の改善点が見つかりやすいです。")
+    return focus[:4]
+
+
+def build_analysis_summary(
+    trades: list[Trade],
+    user_id: Optional[str],
+    latest_import: Optional[AnalysisLatestImportRead] = None,
+) -> AnalysisSummaryRead:
     stats, closed = _build_stats(trades)
     generated_at = _utc_now_iso()
     enough_data = stats.closed_trade_count >= MIN_CLOSED_TRADES_FOR_AI
     signature = _trade_signature(trades)
-    cache_key = f"{user_id or 'public'}:{signature}"
+    cache_key = f"{user_id or 'public'}:{signature}:{_latest_import_signature(latest_import)}"
     ttl_seconds = max(30, int(settings.analysis_cache_ttl_seconds))
     now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -927,6 +961,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
             actions=rule_actions,
             stats=stats,
             review_gaps=rule_review_gaps,
+            latest_import=latest_import,
+            import_review_focus=_import_review_focus(closed, latest_import),
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=False,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -948,6 +984,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
             actions=actions,
             stats=stats,
             review_gaps=rule_review_gaps,
+            latest_import=latest_import,
+            import_review_focus=_import_review_focus(closed, latest_import),
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=True,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -968,6 +1006,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
             actions=rule_actions,
             stats=stats,
             review_gaps=rule_review_gaps,
+            latest_import=latest_import,
+            import_review_focus=_import_review_focus(closed, latest_import),
             data_sufficiency=AnalysisDataSufficiencyRead(
                 enough_data=True,
                 minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -990,6 +1030,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
                 actions=actions,
                 stats=stats,
                 review_gaps=rule_review_gaps,
+                latest_import=latest_import,
+                import_review_focus=_import_review_focus(closed, latest_import),
                 data_sufficiency=AnalysisDataSufficiencyRead(
                     enough_data=True,
                     minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,
@@ -1010,6 +1052,8 @@ def build_analysis_summary(trades: list[Trade], user_id: Optional[str]) -> Analy
                 actions=rule_actions,
                 stats=stats,
                 review_gaps=rule_review_gaps,
+                latest_import=latest_import,
+                import_review_focus=_import_review_focus(closed, latest_import),
                 data_sufficiency=AnalysisDataSufficiencyRead(
                     enough_data=True,
                     minimum_closed_trade_count=MIN_CLOSED_TRADES_FOR_AI,

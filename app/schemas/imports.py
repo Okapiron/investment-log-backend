@@ -2,6 +2,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+BrokerCode = Literal["rakuten", "sbi"]
+
 
 class RakutenImportPreviewRequest(BaseModel):
     filename: Optional[str] = None
@@ -9,6 +11,13 @@ class RakutenImportPreviewRequest(BaseModel):
 
 
 class RakutenImportAuditRequest(BaseModel):
+    tradehistory_filename: Optional[str] = None
+    tradehistory_content: str = Field(min_length=1)
+    realized_filename: Optional[str] = None
+    realized_content: str = Field(min_length=1)
+
+
+class BrokerImportAuditRequest(BaseModel):
     tradehistory_filename: Optional[str] = None
     tradehistory_content: str = Field(min_length=1)
     realized_filename: Optional[str] = None
@@ -52,7 +61,7 @@ class ImportIssueRead(BaseModel):
 
 
 class RakutenImportPreviewResponse(BaseModel):
-    broker: Literal["rakuten"]
+    broker: BrokerCode
     market_scope: Literal["JP"]
     filename: Optional[str] = None
     candidate_count: int = Field(ge=0)
@@ -64,12 +73,15 @@ class RakutenImportPreviewResponse(BaseModel):
 
 
 class RakutenImportCommitRequest(BaseModel):
+    broker: BrokerCode = "rakuten"
     filename: Optional[str] = None
+    realized_filename: Optional[str] = None
+    audit_gap_jpy: Optional[float] = None
     items: list[ImportTradeCandidateRead]
 
 
 class RakutenImportCommitResponse(BaseModel):
-    broker: Literal["rakuten"]
+    broker: BrokerCode
     created_count: int = Field(ge=0)
     updated_count: int = Field(ge=0)
     skipped_count: int = Field(ge=0)
@@ -116,3 +128,16 @@ class RakutenImportAuditResponse(BaseModel):
     unmatched_tt: list[RakutenAuditRowRead]
     top_symbol_diffs: list[RakutenAuditSymbolDiffRead] = Field(default_factory=list)
     reimport_hint: str
+
+
+class ImportSessionRead(BaseModel):
+    id: int
+    broker: BrokerCode
+    source_name: Optional[str] = None
+    realized_source_name: Optional[str] = None
+    imported_at: str
+    created_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
+    skipped_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    audit_gap_jpy: Optional[float] = None

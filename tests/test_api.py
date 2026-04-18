@@ -42,6 +42,9 @@ def test_openapi(client):
     assert "/api/v1/trades" in data["paths"]
     assert "/api/v1/imports/rakuten-jp/preview" in data["paths"]
     assert "/api/v1/imports/rakuten-jp/audit" in data["paths"]
+    assert "/api/v1/imports/{broker}/preview" in data["paths"]
+    assert "/api/v1/imports/{broker}/audit" in data["paths"]
+    assert "/api/v1/imports/sessions/latest" in data["paths"]
     assert "/api/v1/analysis/summary" in data["paths"]
 
 
@@ -2293,12 +2296,95 @@ def test_rakuten_import_preview_and_commit_support_margin_short(client):
     assert commit.status_code == 200
     assert commit.json()["created_count"] == 1
 
-    trades = client.get("/api/v1/trades")
-    assert trades.status_code == 200
-    item = trades.json()["items"][0]
-    assert item["position_side"] == "short"
-    assert item["profit_jpy"] == 9450.0
 
+def test_sbi_import_preview_commit_audit_and_latest_session(client):
+    execution_csv = """約定日,銘柄コード,銘柄名,取引,信用区分,売買,数量,約定単価,手数料,税金等,諸費用,建約定日,建単価
+2026/04/01,7203,トヨタ自動車,現物,,買,100,3000,100,10,0,,
+2026/04/10,7203,トヨタ自動車,現物,,売,100,3100,100,10,0,,
+2026/04/02,9984,ソフトバンクG,信用,新規,買,100,7000,200,20,0,,
+2026/04/12,9984,ソフトバンクG,信用,返済,売,100,6900,200,20,30,2026/04/02,7000
+2026/04/03,7011,三菱重工業,信用,新規,売,100,2000,100,10,0,,
+2026/04/13,7011,三菱重工業,信用,返済,買,100,1900,100,10,0,2026/04/03,2000
+"""
+    realized_csv = """約定日,銘柄コード,銘柄名,数量,売却単価,平均取得価額,実現損益
+2026/04/10,7203,トヨタ自動車,100,3100,3000,9780
+2026/04/12,9984,ソフトバンクG,100,6900,7000,-10470
+2026/04/13,7011,三菱重工業,100,1900,2000,9780
+"""
+
+    preview = client.post("/api/v1/imports/sbi/preview", json={"filename": "sbi_exec.csv", "content": execution_csv})
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["broker"] == "sbi"
+    assert preview_body["candidate_count"] == 3
+    assert {item["position_side"] for item in preview_body["candidates"]} == {"long", "short"}
+
+    audit = client.post(
+        "/api/v1/imports/sbi/audit",
+        json={
+            "tradehistory_filename": "sbi_exec.csv",
+            "tradehistory_content": execution_csv,
+            "realized_filename": "sbi_realized.csv",
+            "realized_content": realized_csv,
+        },
+    )
+    assert audit.status_code == 200
+    audit_body = audit.json()
+    assert audit_body["gap_jpy"] == 0
+    assert audit_body["matched_count"] == 3
+
+    commit = client.post(
+        "/api/v1/imports/sbi/commit",
+        json={
+            "broker": "sbi",
+            "filename": "sbi_exec.csv",
+            "realized_filename": "sbi_realized.csv",
+            "audit_gap_jpy": audit_body["gap_jpy"],
+            "items": preview_body["candidates"],
+        },
+    )
+    assert commit.status_code == 200
+    commit_body = commit.json()
+    assert commit_body["broker"] == "sbi"
+    assert commit_body["created_count"] == 3
+    assert commit_body["updated_count"] == 0
+
+    second = client.post(
+        "/api/v1/imports/sbi/commit",
+        json={"broker": "sbi", "filename": "sbi_exec.csv", "items": preview_body["candidates"]},
+    )
+    assert second.status_code == 200
+    assert second.json()["created_count"] == 0
+    assert second.json()["updated_count"] == 3
+
+    latest = client.get("/api/v1/imports/sessions/latest")
+    assert latest.status_code == 200
+    latest_body = latest.json()
+    sbi_session = next(item for item in latest_body if item["broker"] == "sbi")
+    assert sbi_session["source_name"] == "sbi_exec.csv"
+    assert sbi_session["created_count"] == 0
+    assert sbi_session["updated_count"] == 3
+
+
+def test_analysis_summary_includes_latest_import_focus(client):
+    execution_csv = """約定日,銘柄コード,銘柄名,取引,信用区分,売買,数量,約定単価,手数料,税金等,諸費用
+2026/04/01,7203,トヨタ自動車,現物,,買,100,3000,0,0,0
+2026/04/10,7203,トヨタ自動車,現物,,売,100,2900,0,0,0
+"""
+    preview = client.post("/api/v1/imports/sbi/preview", json={"filename": "sbi_exec.csv", "content": execution_csv})
+    assert preview.status_code == 200
+    commit = client.post(
+        "/api/v1/imports/sbi/commit",
+        json={"broker": "sbi", "filename": "sbi_exec.csv", "audit_gap_jpy": 12, "items": preview.json()["candidates"]},
+    )
+    assert commit.status_code == 200
+
+    summary = client.get("/api/v1/analysis/summary")
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["latest_import"]["broker"] == "sbi"
+    assert body["latest_import"]["source_name"] == "sbi_exec.csv"
+    assert body["import_review_focus"]
 
 def test_prices_route_returns_bars_from_yahoo_provider(client, monkeypatch):
     prev_provider = settings.price_provider

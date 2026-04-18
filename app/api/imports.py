@@ -1,16 +1,19 @@
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
 from app.core.rakuten_csv import audit_rakuten_tradehistory_against_realized, parse_rakuten_domestic_csv
+from app.core.sbi_csv import audit_sbi_tradehistory_against_realized, parse_sbi_domestic_csv
 from app.crud.trades import create_trade_with_fills, fetch_trade, update_trade_with_fills
-from app.db.models import Fill, Trade, TradeImportRecord
+from app.db.models import Fill, ImportSession, Trade, TradeImportRecord
 from app.schemas.imports import (
+    BrokerImportAuditRequest,
+    ImportSessionRead,
     ImportIssueRead,
     RakutenImportAuditRequest,
     RakutenImportAuditResponse,
@@ -22,6 +25,8 @@ from app.schemas.imports import (
 from app.schemas.trade import FillInput, TradeCreate, TradeUpdate
 
 router = APIRouter(prefix="/imports", tags=["imports"])
+
+SUPPORTED_BROKERS = {"rakuten", "sbi"}
 
 
 def _scoped_user_id(claims: dict) -> Optional[str]:
@@ -271,7 +276,8 @@ def _build_trade_update(item) -> TradeUpdate:
     )
 
 
-def _sync_import_record(record: TradeImportRecord, *, filename: Optional[str], item, trade_id: int) -> None:
+def _sync_import_record(record: TradeImportRecord, *, broker: str, filename: Optional[str], item, trade_id: int) -> None:
+    record.broker = broker
     record.source_name = filename
     record.source_signature = item.source_signature
     record.source_position_key = item.source_position_key
@@ -279,6 +285,58 @@ def _sync_import_record(record: TradeImportRecord, *, filename: Optional[str], i
     record.import_state = _candidate_import_state(item)
     record.is_partial_exit = bool(item.is_partial_exit)
     record.trade_id = trade_id
+
+
+def _parse_preview_for_broker(broker: str, content: str, filename: Optional[str]) -> RakutenImportPreviewResponse:
+    if broker == "rakuten":
+        return parse_rakuten_domestic_csv(content, filename)
+    if broker == "sbi":
+        return parse_sbi_domestic_csv(content, filename)
+    raise ValueError(f"unsupported broker: {broker}")
+
+
+def _audit_for_broker(
+    broker: str,
+    tradehistory_content: str,
+    *,
+    tradehistory_filename: Optional[str],
+    realized_content: str,
+) -> RakutenImportAuditResponse:
+    if broker == "rakuten":
+        return audit_rakuten_tradehistory_against_realized(
+            tradehistory_content,
+            tradehistory_filename=tradehistory_filename,
+            realized_content=realized_content,
+        )
+    if broker == "sbi":
+        return audit_sbi_tradehistory_against_realized(
+            tradehistory_content,
+            tradehistory_filename=tradehistory_filename,
+            realized_content=realized_content,
+        )
+    raise ValueError(f"unsupported broker: {broker}")
+
+
+def _validate_broker(broker: str) -> str:
+    normalized = str(broker or "").strip().lower()
+    if normalized not in SUPPORTED_BROKERS:
+        raise HTTPException(status_code=404, detail="unsupported broker")
+    return normalized
+
+
+def _session_read(session: ImportSession) -> ImportSessionRead:
+    return ImportSessionRead(
+        id=int(session.id),
+        broker=session.broker,
+        source_name=session.source_name,
+        realized_source_name=session.realized_source_name,
+        imported_at=session.imported_at,
+        created_count=int(session.created_count or 0),
+        updated_count=int(session.updated_count or 0),
+        skipped_count=int(session.skipped_count or 0),
+        error_count=int(session.error_count or 0),
+        audit_gap_jpy=float(session.audit_gap_jpy) if session.audit_gap_jpy is not None else None,
+    )
 
 
 @router.post("/rakuten-jp/preview", response_model=RakutenImportPreviewResponse)
@@ -289,6 +347,19 @@ def preview_rakuten_jp_import(
 ):
     user_id = _scoped_user_id(claims)
     preview = parse_rakuten_domestic_csv(payload.content, payload.filename)
+    return _mark_existing_candidates(db, preview, user_id=user_id)
+
+
+@router.post("/{broker}/preview", response_model=RakutenImportPreviewResponse)
+def preview_broker_import(
+    broker: str,
+    payload: RakutenImportPreviewRequest,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    user_id = _scoped_user_id(claims)
+    normalized = _validate_broker(broker)
+    preview = _parse_preview_for_broker(normalized, payload.content, payload.filename)
     return _mark_existing_candidates(db, preview, user_id=user_id)
 
 
@@ -305,13 +376,51 @@ def audit_rakuten_jp_import(
     )
 
 
+@router.post("/{broker}/audit", response_model=RakutenImportAuditResponse)
+def audit_broker_import(
+    broker: str,
+    payload: BrokerImportAuditRequest,
+    claims: dict = Depends(require_invited_auth),
+):
+    _scoped_user_id(claims)
+    normalized = _validate_broker(broker)
+    return _audit_for_broker(
+        normalized,
+        payload.tradehistory_content,
+        tradehistory_filename=payload.tradehistory_filename,
+        realized_content=payload.realized_content,
+    )
+
+
 @router.post("/rakuten-jp/commit", response_model=RakutenImportCommitResponse)
 def commit_rakuten_jp_import(
     payload: RakutenImportCommitRequest,
     db: Session = Depends(get_session),
     claims: dict = Depends(require_invited_auth),
 ):
+    payload.broker = "rakuten"
+    return _commit_broker_import(payload, db=db, claims=claims)
+
+
+@router.post("/{broker}/commit", response_model=RakutenImportCommitResponse)
+def commit_broker_import(
+    broker: str,
+    payload: RakutenImportCommitRequest,
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    payload.broker = _validate_broker(broker)
+    return _commit_broker_import(payload, db=db, claims=claims)
+
+
+def _commit_broker_import(
+    payload: RakutenImportCommitRequest,
+    *,
+    db: Session,
+    claims: dict,
+) -> RakutenImportCommitResponse:
     user_id = _scoped_user_id(claims)
+    broker = _validate_broker(payload.broker)
     fallback_counts = _fallback_collision_counts(payload.items)
     created_trade_ids: list[int] = []
     updated_trade_ids: list[int] = []
@@ -327,7 +436,7 @@ def commit_rakuten_jp_import(
                 existing_trade = fetch_trade(db, int(existing_record.trade_id), user_id=user_id)
                 if existing_trade is not None:
                     update_trade_with_fills(db, existing_trade, _build_trade_update(item))
-                    _sync_import_record(existing_record, filename=payload.filename, item=item, trade_id=int(existing_trade.id))
+                    _sync_import_record(existing_record, broker=broker, filename=payload.filename, item=item, trade_id=int(existing_trade.id))
                     db.commit()
                     updated_trade_ids.append(int(existing_trade.id))
                     continue
@@ -335,11 +444,11 @@ def commit_rakuten_jp_import(
             trade = create_trade_with_fills(db, _build_trade_create(item), user_id=user_id)
             db.flush()
             if existing_record is not None:
-                _sync_import_record(existing_record, filename=payload.filename, item=item, trade_id=int(trade.id))
+                _sync_import_record(existing_record, broker=broker, filename=payload.filename, item=item, trade_id=int(trade.id))
             else:
                 db.add(
                     TradeImportRecord(
-                        broker="rakuten",
+                        broker=broker,
                         source_name=payload.filename,
                         source_signature=item.source_signature,
                         source_position_key=item.source_position_key,
@@ -362,8 +471,22 @@ def commit_rakuten_jp_import(
             )
             continue
 
+    session = ImportSession(
+        user_id=user_id,
+        broker=broker,
+        source_name=payload.filename,
+        realized_source_name=payload.realized_filename,
+        created_count=len(created_trade_ids),
+        updated_count=len(updated_trade_ids),
+        skipped_count=len(skipped),
+        error_count=len(errors),
+        audit_gap_jpy=Decimal(str(payload.audit_gap_jpy)) if payload.audit_gap_jpy is not None else None,
+    )
+    db.add(session)
+    db.commit()
+
     return RakutenImportCommitResponse(
-        broker="rakuten",
+        broker=broker,
         created_count=len(created_trade_ids),
         updated_count=len(updated_trade_ids),
         skipped_count=len(skipped),
@@ -373,3 +496,20 @@ def commit_rakuten_jp_import(
         skipped=skipped,
         errors=errors,
     )
+
+
+@router.get("/sessions/latest", response_model=list[ImportSessionRead])
+def latest_import_sessions(
+    db: Session = Depends(get_session),
+    claims: dict = Depends(require_invited_auth),
+):
+    user_id = _scoped_user_id(claims)
+    rows: list[ImportSessionRead] = []
+    for broker in sorted(SUPPORTED_BROKERS):
+        stmt = select(ImportSession).where(ImportSession.broker == broker)
+        if user_id is not None:
+            stmt = stmt.where(ImportSession.user_id == user_id)
+        session = db.scalar(stmt.order_by(ImportSession.imported_at.desc(), ImportSession.id.desc()).limit(1))
+        if session is not None:
+            rows.append(_session_read(session))
+    return rows

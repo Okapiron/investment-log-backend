@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.api.deps import get_session, require_invited_auth
 from app.core.config import settings
 from app.core.runtime_config import evaluate_runtime_config_issues
-from app.db.models import Fill, InviteCode, Trade, TradeImportRecord
+from app.db.models import Fill, ImportSession, InviteCode, Trade, TradeImportRecord
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -171,10 +171,10 @@ def export_my_data(
                 "opened_at": t.opened_at,
                 "closed_at": t.closed_at or None,
                 "buy_date": buy.date if buy else None,
-                "buy_price": buy.price if buy else None,
+                "buy_price": float(buy.price) if buy else None,
                 "buy_qty": buy.qty if buy else None,
                 "sell_date": sell.date if sell else None,
-                "sell_price": sell.price if sell else None,
+                "sell_price": float(sell.price) if sell else None,
                 "sell_qty": sell.qty if sell else None,
                 "rating": t.rating,
                 "tags": t.tags,
@@ -286,6 +286,9 @@ def delete_my_account_data(
             .delete(synchronize_session=False)
             or 0
         )
+        db.query(ImportSession).delete(synchronize_session=False)
+    elif scoped_user_id is not None:
+        db.query(ImportSession).filter(ImportSession.user_id == scoped_user_id).delete(synchronize_session=False)
 
     invite_rows = []
     if scoped_user_id is not None:
