@@ -44,6 +44,8 @@ def test_openapi(client):
     assert "/api/v1/imports/rakuten-jp/audit" in data["paths"]
     assert "/api/v1/imports/{broker}/preview" in data["paths"]
     assert "/api/v1/imports/{broker}/audit" in data["paths"]
+    assert "/api/v1/imports/sbi/realized/preview" in data["paths"]
+    assert "/api/v1/imports/sbi/realized/commit" in data["paths"]
     assert "/api/v1/imports/sessions/latest" in data["paths"]
     assert "/api/v1/analysis/summary" in data["paths"]
 
@@ -2364,6 +2366,178 @@ def test_sbi_import_preview_commit_audit_and_latest_session(client):
     assert sbi_session["source_name"] == "sbi_exec.csv"
     assert sbi_session["created_count"] == 0
     assert sbi_session["updated_count"] == 3
+
+
+def test_sbi_import_parses_actual_csv_preamble_format(client):
+    execution_csv = """
+約定履歴照会 
+
+商品指定,約定開始年月日,約定終了年月日,明細数,明細指定開始,明細指定終了
+"株式現物","2024年01月01日","2026年04月18日","4","1","4"
+
+（注）明細数はご指定された期間の合計です。
+
+約定日,銘柄,銘柄コード,市場,取引,期限,預り,課税,約定数量,約定単価,手数料/諸経費等,税額,受渡日,受渡金額/決済損益
+"2025/05/12","三菱商事","8058","--",株式現物買,"--"," 特定 ","--",10,2778,--,--,"2025/05/14",27780
+"2025/10/14","信越化学工業","4063","--",株式現物売,"--"," 特定 ","申告",10,4933,--,--,"2025/10/16",49330
+"2025/10/14","上新電機","8173","--",株式現物売,"--"," 特定 ","申告",1,2498,--,--,"2025/10/16",2498
+"2026/01/16","東京海上ホールディングス","8766","--",株式現物売,"--"," 特定 ","申告",10,6000,--,--,"2026/01/20",60000
+"""
+    realized_csv = """"国内株式"
+
+"検索件数","3"
+"約定日","2024/1/1-2026/4/18"
+"種類","現物"
+"口座","すべて"
+
+"商品","実現損益(税引前・円)","利益金額(円)","損失金額(円)"
+"現物","+37,236","37,236","0"
+"合計","+37,236","37,236","0"
+
+"約定日","口座","銘柄名","取引","数量","売却/決済額","単価","平均取得価額","実現損益(税引前・円)"
+"2026/1/16","特定","東京海上ホールディングス 8766","売却","10","60,000","6,000","3,006","+29,940"
+"2025/10/14","特定","信越化学工業 4063","売却","10","49,330","4,933","4,251","+6,820"
+"2025/10/14","特定","上新電機 8173","売却","1","2,498","2,498","2,022","+476"
+"""
+
+    preview = client.post("/api/v1/imports/sbi/preview", json={"filename": "SaveFile.csv", "content": execution_csv})
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["candidate_count"] == 1
+    assert preview_body["error_count"] == 0
+    assert {item["code"] for item in preview_body["skipped"]} == {"sell_without_buy"}
+
+    audit = client.post(
+        "/api/v1/imports/sbi/audit",
+        json={
+            "tradehistory_filename": "SaveFile.csv",
+            "tradehistory_content": execution_csv,
+            "realized_filename": "DOMESTIC_STOCK.csv",
+            "realized_content": realized_csv,
+        },
+    )
+    assert audit.status_code == 200
+    audit_body = audit.json()
+    assert audit_body["preview_candidate_count"] == 1
+    assert audit_body["tt_reconstructed_count"] == 0
+    assert audit_body["rakuten_row_count"] == 3
+    assert audit_body["rakuten_total_jpy"] == 37236
+    assert audit_body["gap_jpy"] == -37236
+    assert len(audit_body["missing_in_tt"]) == 3
+
+
+def test_sbi_realized_only_preview_commit_idempotent_and_analysis(client):
+    realized_csv = """"国内株式"
+
+"検索件数","3"
+"約定日","2024/1/1-2026/4/18"
+"種類","現物"
+"口座","すべて"
+
+"商品","実現損益(税引前・円)","利益金額(円)","損失金額(円)"
+"現物","+37,236","37,236","0"
+"合計","+37,236","37,236","0"
+
+"約定日","口座","銘柄名","取引","数量","売却/決済額","単価","平均取得価額","実現損益(税引前・円)"
+"2026/1/16","特定","東京海上ホールディングス 8766","売却","10","60,000","6,000","3,006","+29,940"
+"2025/10/14","特定","信越化学工業 4063","売却","10","49,330","4,933","4,251","+6,820"
+"2025/10/14","特定","上新電機 8173","売却","1","2,498","2,498","2,022","+476"
+"""
+
+    preview = client.post("/api/v1/imports/sbi/realized/preview", json={"filename": "DOMESTIC_STOCK.csv", "content": realized_csv})
+    assert preview.status_code == 200
+    preview_body = preview.json()
+    assert preview_body["candidate_count"] == 3
+    assert preview_body["create_count"] == 3
+    assert preview_body["update_count"] == 0
+    assert preview_body["detailed_skip_count"] == 0
+
+    commit = client.post(
+        "/api/v1/imports/sbi/realized/commit",
+        json={"filename": "DOMESTIC_STOCK.csv", "items": preview_body["candidates"]},
+    )
+    assert commit.status_code == 200
+    commit_body = commit.json()
+    assert commit_body["created_count"] == 3
+    assert commit_body["updated_count"] == 0
+    assert commit_body["skipped_count"] == 0
+
+    trades = client.get("/api/v1/trades?limit=100")
+    assert trades.status_code == 200
+    trades_body = trades.json()
+    assert trades_body["total"] == 3
+    assert round(trades_body["stats"]["total_profit_jpy"]) == 37236
+    assert trades_body["stats"]["avg_holding_days"] is None
+    assert {item["data_quality"] for item in trades_body["items"]} == {"realized_only"}
+    assert all(item["holding_days"] is None for item in trades_body["items"])
+
+    detail = client.get(f"/api/v1/trades/{trades_body['items'][0]['id']}")
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["data_quality"] == "realized_only"
+    assert detail_body["broker_profit_jpy"] is not None
+    assert detail_body["profit_jpy"] == detail_body["broker_profit_jpy"]
+    assert detail_body["holding_days"] is None
+    assert all(fill["fee_total_jpy"] is None for fill in detail_body["fills"])
+
+    analysis = client.get("/api/v1/analysis/summary")
+    assert analysis.status_code == 200
+    stats = analysis.json()["stats"]
+    assert stats["closed_trade_count"] == 3
+    assert stats["realized_only_trade_count"] == 3
+    assert stats["holding_analysis_trade_count"] == 0
+    assert stats["avg_holding_days"] is None
+
+    second = client.post(
+        "/api/v1/imports/sbi/realized/commit",
+        json={"filename": "DOMESTIC_STOCK.csv", "items": preview_body["candidates"]},
+    )
+    assert second.status_code == 200
+    assert second.json()["created_count"] == 0
+    assert second.json()["updated_count"] == 3
+    assert client.get("/api/v1/trades?limit=100").json()["total"] == 3
+
+
+def test_sbi_detailed_import_upgrades_realized_only_trade(client):
+    realized_csv = """"国内株式"
+
+"約定日","口座","銘柄名","取引","数量","売却/決済額","単価","平均取得価額","実現損益(税引前・円)"
+"2026/1/16","特定","東京海上ホールディングス 8766","売却","10","60,000","6,000","3,006","+29,940"
+"""
+    realized_preview = client.post("/api/v1/imports/sbi/realized/preview", json={"filename": "realized.csv", "content": realized_csv})
+    assert realized_preview.status_code == 200
+    realized_commit = client.post(
+        "/api/v1/imports/sbi/realized/commit",
+        json={"filename": "realized.csv", "items": realized_preview.json()["candidates"]},
+    )
+    assert realized_commit.status_code == 200
+    trade_id = realized_commit.json()["created_trade_ids"][0]
+    patch = client.patch(f"/api/v1/trades/{trade_id}", json={"tags": "確認済", "notes_review": "補完時のメモ"})
+    assert patch.status_code == 200
+
+    execution_csv = """約定日,銘柄,銘柄コード,市場,取引,期限,預り,課税,約定数量,約定単価,手数料/諸経費等,税額,受渡日,受渡金額/決済損益
+"2025/12/01","東京海上ホールディングス","8766","--",株式現物買,"--"," 特定 ","--",10,3006,--,--,"2025/12/03",30060
+"2026/01/16","東京海上ホールディングス","8766","--",株式現物売,"--"," 特定 ","申告",10,6000,--,--,"2026/01/20",60000
+"""
+    detailed_preview = client.post("/api/v1/imports/sbi/preview", json={"filename": "SaveFile.csv", "content": execution_csv})
+    assert detailed_preview.status_code == 200
+    assert detailed_preview.json()["candidate_count"] == 1
+    detailed_commit = client.post(
+        "/api/v1/imports/sbi/commit",
+        json={"broker": "sbi", "filename": "SaveFile.csv", "items": detailed_preview.json()["candidates"]},
+    )
+    assert detailed_commit.status_code == 200
+    assert detailed_commit.json()["created_count"] == 0
+    assert detailed_commit.json()["updated_count"] == 1
+    assert detailed_commit.json()["updated_trade_ids"] == [trade_id]
+
+    detail = client.get(f"/api/v1/trades/{trade_id}").json()
+    assert detail["data_quality"] == "full"
+    assert detail["broker_profit_jpy"] is None
+    assert detail["opened_at"] == "2025-12-01"
+    assert detail["holding_days"] == 46
+    assert detail["tags"] == "確認済"
+    assert detail["notes_review"] == "補完時のメモ"
 
 
 def test_analysis_summary_includes_latest_import_focus(client):

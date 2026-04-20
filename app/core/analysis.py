@@ -43,7 +43,8 @@ class ClosedTradeSnapshot:
     profit_currency: str
     profit_value: float
     roi_pct: Optional[float]
-    holding_days: int
+    holding_days: Optional[int]
+    data_quality: str
     rating: Optional[int]
     tags: list[str]
     notes_buy: str
@@ -70,13 +71,19 @@ def _safe_float(value: object) -> Optional[float]:
 
 def _closed_trade_snapshot(trade: Trade) -> Optional[ClosedTradeSnapshot]:
     fills = {fill.side: fill for fill in trade.fills}
-    buy = fills.get("buy")
-    sell = fills.get("sell")
-    if buy is None or sell is None:
+    position_side = str(getattr(trade, "position_side", "long") or "long")
+    open_fill = fills.get("buy" if position_side == "long" else "sell")
+    close_fill = fills.get("sell" if position_side == "long" else "buy")
+    if open_fill is None or close_fill is None:
         return None
 
-    profit_value, holding_days = compute_profit_holding(buy, sell)
-    principal = (float(buy.price) * float(buy.qty)) + float(buy.fee or 0)
+    data_quality = str(getattr(trade, "data_quality", "full") or "full")
+    if data_quality == "realized_only" and getattr(trade, "broker_profit_jpy", None) is not None:
+        profit_value = float(trade.broker_profit_jpy)
+        holding_days = None
+    else:
+        profit_value, holding_days = compute_profit_holding(open_fill, close_fill, position_side=position_side)
+    principal = (float(open_fill.price) * float(open_fill.qty)) + float(open_fill.fee or 0)
     roi_pct = ((profit_value / principal) * 100.0) if principal > 0 else None
     return ClosedTradeSnapshot(
         trade_id=int(trade.id),
@@ -88,7 +95,8 @@ def _closed_trade_snapshot(trade: Trade) -> Optional[ClosedTradeSnapshot]:
         profit_currency="JPY" if trade.market == "JP" else "USD",
         profit_value=float(profit_value),
         roi_pct=roi_pct,
-        holding_days=int(holding_days),
+        holding_days=int(holding_days) if holding_days is not None else None,
+        data_quality=data_quality,
         rating=int(trade.rating) if trade.rating is not None else None,
         tags=_parse_tags(trade.tags),
         notes_buy=str(trade.notes_buy or "").strip(),
@@ -173,7 +181,7 @@ def _holding_buckets(primary_closed: list[ClosedTradeSnapshot]) -> list[Analysis
 
     buckets: list[AnalysisHoldingBucketRead] = []
     for label, predicate in ranges:
-        items = [item for item in primary_closed if predicate(item.holding_days)]
+        items = [item for item in primary_closed if item.holding_days is not None and predicate(item.holding_days)]
         wins = [item.profit_value for item in items if item.profit_value > 0]
         losses = [item.profit_value for item in items if item.profit_value < 0]
         buckets.append(
@@ -197,7 +205,7 @@ def _window_metrics(items: list[ClosedTradeSnapshot]) -> dict[str, object]:
         "win_rate_pct": _round_or_none(_win_rate(items)),
         "avg_win_profit_amount": _round_or_none(_avg(wins)),
         "avg_loss_amount": _round_or_none(_avg_abs(losses)),
-        "avg_holding_days": _round_or_none(_avg([float(item.holding_days) for item in items])),
+        "avg_holding_days": _round_or_none(_avg([float(item.holding_days) for item in items if item.holding_days is not None])),
         "avg_roi_pct": _round_or_none(_avg([float(item.roi_pct) for item in items if item.roi_pct is not None])),
     }
 
@@ -209,9 +217,11 @@ def _build_stats(trades: list[Trade]) -> tuple[AnalysisStatsRead, list[ClosedTra
     wins = [item for item in closed if item.profit_value > 0]
     losses = [item for item in closed if item.profit_value < 0]
     breakeven = [item for item in closed if item.profit_value == 0]
+    realized_only_count = len([item for item in closed if item.data_quality == "realized_only"])
+    holding_analysis_count = len([item for item in closed if item.holding_days is not None])
     review_done_count = len([item for item in closed if item.review_done])
     roi_values = [item.roi_pct for item in closed if item.roi_pct is not None]
-    holding_values = [float(item.holding_days) for item in closed]
+    holding_values = [float(item.holding_days) for item in closed if item.holding_days is not None]
     rating_values = [float(item.rating) for item in closed if item.rating is not None]
 
     tag_counter = Counter()
@@ -264,11 +274,13 @@ def _build_stats(trades: list[Trade]) -> tuple[AnalysisStatsRead, list[ClosedTra
         primary_market=primary_market,
         primary_profit_currency=primary_profit_currency,
         primary_closed_trade_count=len(primary_closed),
+        realized_only_trade_count=realized_only_count,
+        holding_analysis_trade_count=holding_analysis_count,
         avg_win_profit_amount=_round_or_none(avg_win_profit_amount),
         avg_loss_amount=_round_or_none(avg_loss_amount),
         profit_loss_ratio=_round_or_none(profit_loss_ratio),
-        avg_win_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_wins])),
-        avg_loss_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_losses])),
+        avg_win_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_wins if item.holding_days is not None])),
+        avg_loss_holding_days=_round_or_none(_avg([float(item.holding_days) for item in primary_losses if item.holding_days is not None])),
         recent_closed_trade_count=int(recent_metrics["closed_trade_count"]),
         recent_win_rate_pct=recent_metrics["win_rate_pct"],
         recent_avg_win_profit_amount=recent_metrics["avg_win_profit_amount"],
@@ -393,8 +405,8 @@ def _missing_review_fields(closed: list[ClosedTradeSnapshot]) -> list[tuple[str,
 
 
 def _holding_tendency_label(wins: list[ClosedTradeSnapshot], losses: list[ClosedTradeSnapshot]) -> str:
-    win_avg = _avg([float(item.holding_days) for item in wins]) if wins else None
-    loss_avg = _avg([float(item.holding_days) for item in losses]) if losses else None
+    win_avg = _avg([float(item.holding_days) for item in wins if item.holding_days is not None]) if wins else None
+    loss_avg = _avg([float(item.holding_days) for item in losses if item.holding_days is not None]) if losses else None
     if win_avg is None and loss_avg is None:
         return "保有日数の傾向はまだ十分に判断できません。"
     if win_avg is not None and loss_avg is None:

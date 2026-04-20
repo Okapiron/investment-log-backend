@@ -75,6 +75,7 @@ class Trade(Base):
     __table_args__ = (
         CheckConstraint("market IN ('JP','US')", name="ck_trades_market"),
         CheckConstraint("position_side IN ('long','short')", name="ck_trades_position_side"),
+        CheckConstraint("data_quality IN ('full','realized_only')", name="ck_trades_data_quality"),
         CheckConstraint("(rating IS NULL) OR (rating BETWEEN 1 AND 5)", name="ck_trades_rating"),
         Index("idx_trades_user_id", "user_id"),
         Index("idx_trades_market", "market"),
@@ -87,6 +88,8 @@ class Trade(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String)
     market: Mapped[str] = mapped_column(String, nullable=False)
     position_side: Mapped[str] = mapped_column(String, nullable=False, default="long")
+    data_quality: Mapped[str] = mapped_column(String, nullable=False, default="full")
+    broker_profit_jpy: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     symbol: Mapped[str] = mapped_column(String, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String)
     notes_buy: Mapped[Optional[str]] = mapped_column(Text)

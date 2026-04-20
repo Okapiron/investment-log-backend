@@ -4,6 +4,7 @@ import csv
 from decimal import Decimal
 import hashlib
 import io
+import re
 from typing import Optional
 
 from app.core.rakuten_csv import (
@@ -22,6 +23,8 @@ from app.schemas.imports import (
     RakutenAuditRowRead,
     RakutenImportAuditResponse,
     RakutenImportPreviewResponse,
+    SbiRealizedImportCandidateRead,
+    SbiRealizedImportPreviewResponse,
 )
 
 _HEADER_ALIASES = {
@@ -31,8 +34,8 @@ _HEADER_ALIASES = {
     "side": ("売買", "売買区分", "取引"),
     "qty": {"数量", "株数", "約定数量", "数量［株］", "数量[株]"},
     "price": {"約定単価", "単価", "売買単価", "約定価格", "単価［円］", "単価[円]"},
-    "fee": {"手数料", "委託手数料", "手数料［円］", "手数料[円]"},
-    "tax_fee": {"税金等", "消費税", "手数料消費税", "税金等［円］", "税金等[円]"},
+    "fee": {"手数料", "委託手数料", "手数料［円］", "手数料[円]", "手数料/諸経費等"},
+    "tax_fee": {"税金等", "消費税", "手数料消費税", "税金等［円］", "税金等[円]", "税額"},
     "other_fee": {"諸費用", "金利", "貸株料", "逆日歩", "管理費", "諸費用［円］", "諸費用[円]"},
     "trade_type": ("取引区分", "取引種別", "商品", "現物信用", "預り区分", "取引"),
     "credit_type": ("信用区分", "新規返済", "新規/返済", "建区分"),
@@ -40,8 +43,15 @@ _HEADER_ALIASES = {
     "build_price": {"建単価", "建単価［円］", "建単価[円]", "平均取得価額"},
     "build_fee": {"建手数料", "建手数料［円］", "建手数料[円]"},
     "build_fee_tax": {"建手数料消費税", "建手数料消費税［円］", "建手数料消費税[円]"},
-    "settlement_amount": {"受渡金額", "受渡金額［円］", "受渡金額[円]", "精算金額"},
-    "realized_profit": {"実現損益", "損益", "譲渡損益", "実現損益［円］", "実現損益[円]"},
+    "settlement_amount": {"受渡金額", "受渡金額［円］", "受渡金額[円]", "精算金額", "受渡金額/決済損益"},
+    "realized_profit": {
+        "実現損益",
+        "損益",
+        "譲渡損益",
+        "実現損益［円］",
+        "実現損益[円]",
+        "実現損益(税引前・円)",
+    },
     "avg_cost": {"平均取得価額", "取得単価", "買付単価"},
     "sell_price": {"売却/決済単価", "売却単価", "決済単価", "売単価", "売買単価"},
     "sell_date": {"約定日", "決済日", "売却日", "受渡日"},
@@ -63,6 +73,39 @@ def _headers(fieldnames: list[str] | None) -> dict[str, str]:
 def _value(row: dict[str, str], headers: dict[str, str], key: str) -> str:
     name = headers.get(key)
     return _clean_text(row.get(name, "")) if name else ""
+
+
+def _has_required_key(headers: dict[str, str], key: str) -> bool:
+    return any(part in headers for part in key.split("|"))
+
+
+def _table_rows(content: str, required_keys: tuple[str, ...]) -> tuple[dict[str, str], list[tuple[int, dict[str, str]]]]:
+    rows = list(csv.reader(io.StringIO(content)))
+    for index, fieldnames in enumerate(rows):
+        if not any(_clean_text(cell) for cell in fieldnames):
+            continue
+        headers = _headers(fieldnames)
+        if not all(_has_required_key(headers, key) for key in required_keys):
+            continue
+        data_rows: list[tuple[int, dict[str, str]]] = []
+        for line, values in enumerate(rows[index + 1 :], start=index + 2):
+            if not any(_clean_text(cell) for cell in values):
+                continue
+            padded = [*values, *([""] * max(0, len(fieldnames) - len(values)))]
+            data_rows.append((line, {fieldnames[i]: padded[i] for i in range(len(fieldnames))}))
+        return headers, data_rows
+    return {}, []
+
+
+def _symbol_and_name(row: dict[str, str], headers: dict[str, str]) -> tuple[str, str]:
+    symbol = _value(row, headers, "symbol")
+    name = _value(row, headers, "name") or symbol
+    if symbol:
+        return symbol, name
+    match = re.search(r"(?:\s|　)([0-9A-Z]{4,5})$", name)
+    if not match:
+        return "", name
+    return match.group(1), name[: match.start()].strip()
 
 
 def _trade_kind(row: dict[str, str], headers: dict[str, str]) -> str:
@@ -115,9 +158,7 @@ def _as_sbi_candidate_signatures(preview: RakutenImportPreviewResponse) -> Rakut
 
 
 def parse_sbi_domestic_csv(content: str, filename: Optional[str] = None) -> RakutenImportPreviewResponse:
-    stream = io.StringIO(content)
-    reader = csv.DictReader(stream)
-    headers = _headers(reader.fieldnames)
+    headers, rows = _table_rows(content, ("date", "symbol", "side", "qty", "price"))
     missing = _required_missing(headers)
     if missing:
         return RakutenImportPreviewResponse(
@@ -135,8 +176,8 @@ def parse_sbi_domestic_csv(content: str, filename: Optional[str] = None) -> Raku
     raw_rows: list[_RawCsvTrade] = []
     skipped: list[ImportIssueRead] = []
     errors: list[ImportIssueRead] = []
-    for line, row in enumerate(reader, start=2):
-        symbol = _value(row, headers, "symbol")
+    for line, row in rows:
+        symbol, name = _symbol_and_name(row, headers)
         date = _parse_date(_value(row, headers, "date"))
         qty = _parse_jp_int(_value(row, headers, "qty"))
         price = _parse_jp_decimal(_value(row, headers, "price"))
@@ -153,7 +194,7 @@ def parse_sbi_domestic_csv(content: str, filename: Optional[str] = None) -> Raku
             _RawCsvTrade(
                 line=line,
                 symbol=symbol,
-                name=_value(row, headers, "name") or symbol,
+                name=name or symbol,
                 trade_kind=_trade_kind(row, headers),
                 side=side,
                 position_side=_position_side(row, headers),
@@ -190,11 +231,10 @@ def parse_sbi_domestic_csv(content: str, filename: Optional[str] = None) -> Raku
 
 
 def _realized_rows(content: str) -> list[RakutenAuditRowRead]:
-    reader = csv.DictReader(io.StringIO(content))
-    headers = _headers(reader.fieldnames)
+    headers, table = _table_rows(content, ("date", "name|symbol", "qty", "price|sell_price", "avg_cost", "realized_profit"))
     rows: list[RakutenAuditRowRead] = []
-    for row in reader:
-        symbol = _value(row, headers, "symbol")
+    for _line, row in table:
+        symbol, name = _symbol_and_name(row, headers)
         sell_date = _parse_date(_value(row, headers, "sell_date")) or _parse_date(_value(row, headers, "date"))
         qty = _parse_jp_int(_value(row, headers, "qty"))
         sell_price = _parse_jp_decimal(_value(row, headers, "sell_price") or _value(row, headers, "price"))
@@ -205,7 +245,7 @@ def _realized_rows(content: str) -> list[RakutenAuditRowRead]:
         rows.append(
             RakutenAuditRowRead(
                 symbol=symbol,
-                name=_value(row, headers, "name") or symbol,
+                name=name or symbol,
                 sell_date=sell_date,
                 qty=qty,
                 sell_price=float(sell_price),
@@ -218,6 +258,85 @@ def _realized_rows(content: str) -> list[RakutenAuditRowRead]:
 
 def _audit_key(row: RakutenAuditRowRead) -> tuple[str, str, int, str]:
     return (row.symbol, row.sell_date, row.qty, f"{row.sell_price:.2f}")
+
+
+def _realized_signature(row: RakutenAuditRowRead) -> str:
+    base = "|".join(
+        [
+            "sbi-realized",
+            row.symbol,
+            row.sell_date,
+            str(row.qty),
+            f"{Decimal(str(row.sell_price)).quantize(Decimal('0.01'))}",
+            f"{Decimal(str(row.buy_price_or_avg_cost)).quantize(Decimal('0.01'))}",
+            f"{Decimal(str(row.rakuten_profit_jpy or 0)).quantize(Decimal('0.01'))}",
+        ]
+    )
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
+def parse_sbi_realized_only_csv(content: str, filename: Optional[str] = None) -> SbiRealizedImportPreviewResponse:
+    headers, table = _table_rows(content, ("date", "name|symbol", "qty", "price|sell_price", "avg_cost", "realized_profit"))
+    if not headers:
+        return SbiRealizedImportPreviewResponse(
+            filename=filename,
+            candidate_count=0,
+            create_count=0,
+            update_count=0,
+            detailed_skip_count=0,
+            error_count=1,
+            candidates=[],
+            skipped=[],
+            errors=[ImportIssueRead(line=None, code="missing_headers", message="SBI実現損益CSVのヘッダーを読み取れませんでした。")],
+        )
+
+    candidates: list[SbiRealizedImportCandidateRead] = []
+    skipped: list[ImportIssueRead] = []
+    errors: list[ImportIssueRead] = []
+    for line, raw in table:
+        symbol, name = _symbol_and_name(raw, headers)
+        sell_date = _parse_date(_value(raw, headers, "sell_date")) or _parse_date(_value(raw, headers, "date"))
+        qty = _parse_jp_int(_value(raw, headers, "qty"))
+        sell_price = _parse_jp_decimal(_value(raw, headers, "sell_price") or _value(raw, headers, "price"))
+        avg_cost = _parse_jp_decimal(_value(raw, headers, "avg_cost") or _value(raw, headers, "build_price"))
+        realized = _parse_jp_int(_value(raw, headers, "realized_profit"))
+        if not symbol or not sell_date or not qty or sell_price is None or avg_cost is None or realized is None:
+            skipped.append(ImportIssueRead(line=line, code="unsupported_row", message="SBI実現損益行として読み取れませんでした。"))
+            continue
+        audit_row = RakutenAuditRowRead(
+            symbol=symbol,
+            name=name or symbol,
+            sell_date=sell_date,
+            qty=qty,
+            sell_price=float(sell_price),
+            buy_price_or_avg_cost=float(avg_cost),
+            rakuten_profit_jpy=float(realized),
+        )
+        candidates.append(
+            SbiRealizedImportCandidateRead(
+                source_signature=_realized_signature(audit_row),
+                symbol=symbol,
+                name=name or symbol,
+                close_date=sell_date,
+                qty=qty,
+                sell_price=float(sell_price),
+                avg_cost=float(avg_cost),
+                realized_profit_jpy=float(realized),
+                source_lines=[line],
+            )
+        )
+
+    return SbiRealizedImportPreviewResponse(
+        filename=filename,
+        candidate_count=len(candidates),
+        create_count=len(candidates),
+        update_count=0,
+        detailed_skip_count=0,
+        error_count=len(errors),
+        candidates=candidates,
+        skipped=skipped,
+        errors=errors,
+    )
 
 
 def _candidate_profit(item) -> Optional[RakutenAuditRowRead]:

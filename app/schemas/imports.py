@@ -92,6 +92,56 @@ class RakutenImportCommitResponse(BaseModel):
     errors: list[ImportIssueRead]
 
 
+class SbiRealizedImportPreviewRequest(BaseModel):
+    filename: Optional[str] = None
+    content: str = Field(min_length=1)
+
+
+class SbiRealizedImportCandidateRead(BaseModel):
+    source_signature: str
+    symbol: str
+    name: Optional[str] = None
+    close_date: str
+    qty: int = Field(ge=1)
+    sell_price: float
+    avg_cost: float
+    realized_profit_jpy: float
+    source_lines: list[int] = Field(default_factory=list)
+    already_imported: bool = False
+    detailed_trade_exists: bool = False
+
+
+class SbiRealizedImportPreviewResponse(BaseModel):
+    broker: Literal["sbi"] = "sbi"
+    market_scope: Literal["JP"] = "JP"
+    filename: Optional[str] = None
+    candidate_count: int = Field(ge=0)
+    create_count: int = Field(ge=0)
+    update_count: int = Field(ge=0)
+    detailed_skip_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    candidates: list[SbiRealizedImportCandidateRead]
+    skipped: list[ImportIssueRead]
+    errors: list[ImportIssueRead]
+
+
+class SbiRealizedImportCommitRequest(BaseModel):
+    filename: Optional[str] = None
+    items: list[SbiRealizedImportCandidateRead]
+
+
+class SbiRealizedImportCommitResponse(BaseModel):
+    broker: Literal["sbi"] = "sbi"
+    created_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
+    skipped_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    created_trade_ids: list[int]
+    updated_trade_ids: list[int] = Field(default_factory=list)
+    skipped: list[ImportIssueRead]
+    errors: list[ImportIssueRead]
+
+
 class RakutenAuditRowRead(BaseModel):
     symbol: str
     name: Optional[str] = None

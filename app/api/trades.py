@@ -82,6 +82,8 @@ def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False, import_source
     if opening_fill is None:
         raise HTTPException(status_code=409, detail="trade fills are inconsistent")
 
+    data_quality = str(getattr(trade, "data_quality", "full") or "full")
+    broker_profit_jpy = getattr(trade, "broker_profit_jpy", None)
     is_open = closing_fill is None
     profit_jpy = None
     profit_usd = None
@@ -94,7 +96,12 @@ def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False, import_source
     total_other_cost_jpy = None
     profit_currency = "JPY" if trade.market == "JP" else "USD"
     holding_days = None
-    if closing_fill is not None:
+    if closing_fill is not None and data_quality == "realized_only" and broker_profit_jpy is not None:
+        profit_jpy = float(broker_profit_jpy)
+        net_profit_jpy = float(broker_profit_jpy)
+        profit_currency = "JPY"
+        holding_days = None
+    elif closing_fill is not None:
         profit_value, holding_days = compute_profit_holding(opening_fill, closing_fill, position_side=position_side)
         totals = compute_trade_financials(opening_fill, closing_fill, position_side=position_side)
         if trade.market == "JP":
@@ -113,6 +120,8 @@ def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False, import_source
         id=trade.id,
         market=trade.market,
         position_side=position_side,
+        data_quality=data_quality,
+        broker_profit_jpy=float(broker_profit_jpy) if broker_profit_jpy is not None else None,
         symbol=trade.symbol,
         name=trade.name,
         notes_buy=trade.notes_buy,
@@ -139,7 +148,9 @@ def _to_trade_read(trade: Trade, *, is_partial_exit: bool = False, import_source
                 fee_commission_jpy=fill.fee_commission_jpy,
                 fee_tax_jpy=fill.fee_tax_jpy,
                 fee_other_jpy=fill.fee_other_jpy,
-                fee_total_jpy=fill.fee_total_jpy if fill.fee_total_jpy is not None else fill.fee or 0,
+                fee_total_jpy=fill.fee_total_jpy
+                if fill.fee_total_jpy is not None or data_quality == "realized_only"
+                else fill.fee or 0,
             )
             for fill in fills
         ],
@@ -238,6 +249,16 @@ def _profit_value(item: TradeRead) -> Optional[float]:
 def _roi_value(item: TradeRead) -> Optional[float]:
     if _is_open_trade(item):
         return None
+    if item.data_quality == "realized_only":
+        opening_side = "buy" if item.position_side == "long" else "sell"
+        opening_fill = next((fill for fill in item.fills if fill.side == opening_side), None)
+        if opening_fill is None:
+            return None
+        principal = float(opening_fill.price) * float(opening_fill.qty)
+        if principal <= 0:
+            return None
+        profit = _profit_value(item)
+        return None if profit is None else (profit / principal) * 100.0
     opening_side = "buy" if item.position_side == "long" else "sell"
     opening_fill = None
     for fill in item.fills:

@@ -49,6 +49,8 @@ class AnalysisStatsRead(BaseModel):
     primary_market: Optional[str] = None
     primary_profit_currency: Optional[str] = None
     primary_closed_trade_count: int = Field(default=0, ge=0)
+    realized_only_trade_count: int = Field(default=0, ge=0)
+    holding_analysis_trade_count: int = Field(default=0, ge=0)
     avg_win_profit_amount: Optional[float] = None
     avg_loss_amount: Optional[float] = None
     profit_loss_ratio: Optional[float] = None

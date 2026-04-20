@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,8 @@ class FillRead(BaseModel):
 class TradeCreate(BaseModel):
     market: str
     position_side: str = "long"
+    data_quality: Literal["full", "realized_only"] = "full"
+    broker_profit_jpy: Optional[Decimal] = None
     symbol: str = Field(min_length=1, max_length=64)
     name: Optional[str] = None
     notes_buy: Optional[str] = None
@@ -49,6 +51,8 @@ class TradeCreate(BaseModel):
 class TradeUpdate(BaseModel):
     market: Optional[str] = None
     position_side: Optional[str] = None
+    data_quality: Optional[Literal["full", "realized_only"]] = None
+    broker_profit_jpy: Optional[Decimal] = None
     symbol: Optional[str] = Field(default=None, min_length=1, max_length=64)
     name: Optional[str] = None
     notes_buy: Optional[str] = None
@@ -72,6 +76,8 @@ class TradeRead(BaseModel):
     id: int
     market: str
     position_side: str = "long"
+    data_quality: Literal["full", "realized_only"] = "full"
+    broker_profit_jpy: Optional[float] = None
     symbol: str
     name: Optional[str]
     notes_buy: Optional[str]

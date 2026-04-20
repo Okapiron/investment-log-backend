@@ -33,6 +33,13 @@ def _validate_position_side(position_side: str) -> str:
     return normalized
 
 
+def _validate_data_quality(data_quality: str) -> str:
+    normalized = str(data_quality or "").strip().lower()
+    if normalized not in {"full", "realized_only"}:
+        raise HTTPException(status_code=422, detail="data_quality must be full or realized_only")
+    return normalized
+
+
 def _open_fill_side(position_side: str) -> str:
     return "buy" if position_side == "long" else "sell"
 
@@ -186,6 +193,8 @@ def create_trade_with_fills(db: Session, payload: TradeCreate, user_id: Optional
         user_id=(str(user_id).strip() or None) if user_id is not None else None,
         market=payload.market,
         position_side=position_side,
+        data_quality=_validate_data_quality(payload.data_quality or "full"),
+        broker_profit_jpy=payload.broker_profit_jpy,
         symbol=payload.symbol,
         name=payload.name,
         notes_buy=payload.notes_buy,
@@ -244,6 +253,8 @@ def update_trade_with_fills(db: Session, trade: Trade, payload: TradeUpdate) -> 
         _validate_market(data["market"])
     if "position_side" in data and data["position_side"] is not None:
         data["position_side"] = _validate_position_side(data["position_side"])
+    if "data_quality" in data and data["data_quality"] is not None:
+        data["data_quality"] = _validate_data_quality(data["data_quality"])
 
     fills_payload = data.pop("fills", None)
     buy_date = data.pop("buy_date", None)
