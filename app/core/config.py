@@ -85,6 +85,22 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("ANALYSIS_MOCK_ENABLED", "APP_ANALYSIS_MOCK_ENABLED"),
     )
+    public_v1_mode: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PUBLIC_V1_MODE", "APP_PUBLIC_V1_MODE"),
+    )
+    import_sbi_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("IMPORT_SBI_ENABLED", "APP_IMPORT_SBI_ENABLED"),
+    )
+    price_api_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PRICE_API_ENABLED", "APP_PRICE_API_ENABLED"),
+    )
+    allow_unofficial_price_source: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("ALLOW_UNOFFICIAL_PRICE_SOURCE", "APP_ALLOW_UNOFFICIAL_PRICE_SOURCE"),
+    )
     price_provider: str = Field(
         default="yahoo_unofficial",
         validation_alias=AliasChoices("PRICE_PROVIDER", "APP_PRICE_PROVIDER"),

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.config import settings
 from app.core.price_provider import SUPPORTED_INTERVALS, get_price_provider
 from app.schemas.price import PriceResponse
 
@@ -12,6 +13,8 @@ def get_prices(
     symbol: str = Query(..., min_length=1),
     interval: str = Query(default="1d"),
 ):
+    if not settings.price_api_enabled:
+        raise HTTPException(status_code=503, detail="price api is disabled")
     if interval not in SUPPORTED_INTERVALS:
         raise HTTPException(status_code=422, detail="interval currently supports only 1d, 1w, 1m")
 

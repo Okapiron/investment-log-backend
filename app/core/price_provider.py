@@ -321,6 +321,8 @@ class MarketstackPriceProvider(_BasePriceProvider):
 def get_price_provider():
     provider = str(settings.price_provider or "").strip().lower()
     if provider in {"", "yahoo", "yahoo_unofficial"}:
+        if not settings.allow_unofficial_price_source:
+            raise HTTPException(status_code=503, detail="unofficial price source is disabled")
         return YahooUnofficialPriceProvider()
     if provider == "marketstack":
         return MarketstackPriceProvider()

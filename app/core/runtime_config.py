@@ -70,4 +70,17 @@ def evaluate_runtime_config_issues(settings) -> tuple[list[str], list[str]]:
     if settings.rate_limit_enabled and int(settings.rate_limit_per_minute) < 30:
         warnings.append("RATE_LIMIT_PER_MINUTE is very low")
 
+    if settings.public_v1_mode:
+        if settings.private_mode_enabled:
+            errors.append("PRIVATE_MODE_ENABLED must be false when PUBLIC_V1_MODE=true")
+        if not settings.auth_enabled:
+            errors.append("AUTH_ENABLED must be true when PUBLIC_V1_MODE=true")
+        if settings.import_sbi_enabled:
+            warnings.append("IMPORT_SBI_ENABLED is true in PUBLIC_V1_MODE (recommended false or beta-only UI)")
+        if not settings.price_api_enabled:
+            warnings.append("PRICE_API_ENABLED is false in PUBLIC_V1_MODE (chart-related APIs will be disabled)")
+        provider = str(settings.price_provider or "").strip().lower()
+        if provider in {"yahoo", "yahoo_unofficial"} and not settings.allow_unofficial_price_source:
+            errors.append("PRICE_PROVIDER cannot be yahoo_unofficial when ALLOW_UNOFFICIAL_PRICE_SOURCE=false")
+
     return errors, warnings

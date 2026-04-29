@@ -34,6 +34,18 @@ router = APIRouter(prefix="/imports", tags=["imports"])
 SUPPORTED_BROKERS = {"rakuten", "sbi"}
 
 
+def _enabled_brokers() -> set[str]:
+    enabled = {"rakuten"}
+    if settings.import_sbi_enabled:
+        enabled.add("sbi")
+    return enabled
+
+
+def _ensure_broker_enabled(broker: str) -> None:
+    if broker not in _enabled_brokers():
+        raise HTTPException(status_code=404, detail="unsupported broker")
+
+
 def _scoped_user_id(claims: dict) -> Optional[str]:
     if not settings.auth_enabled:
         return None
@@ -471,6 +483,7 @@ def _validate_broker(broker: str) -> str:
     normalized = str(broker or "").strip().lower()
     if normalized not in SUPPORTED_BROKERS:
         raise HTTPException(status_code=404, detail="unsupported broker")
+    _ensure_broker_enabled(normalized)
     return normalized
 
 
@@ -519,6 +532,7 @@ def preview_sbi_realized_import(
     db: Session = Depends(get_session),
     claims: dict = Depends(require_invited_auth),
 ):
+    _ensure_broker_enabled("sbi")
     user_id = _scoped_user_id(claims)
     preview = parse_sbi_realized_only_csv(payload.content, payload.filename)
     return _mark_sbi_realized_candidates(db, preview, user_id=user_id)
@@ -580,6 +594,7 @@ def commit_sbi_realized_import(
     db: Session = Depends(get_session),
     claims: dict = Depends(require_invited_auth),
 ):
+    _ensure_broker_enabled("sbi")
     user_id = _scoped_user_id(claims)
     created_trade_ids: list[int] = []
     updated_trade_ids: list[int] = []
@@ -772,7 +787,7 @@ def latest_import_sessions(
 ):
     user_id = _scoped_user_id(claims)
     rows: list[ImportSessionRead] = []
-    for broker in sorted(SUPPORTED_BROKERS):
+    for broker in sorted(_enabled_brokers()):
         stmt = select(ImportSession).where(ImportSession.broker == broker)
         if user_id is not None:
             stmt = stmt.where(ImportSession.user_id == user_id)

@@ -100,6 +100,91 @@ def test_runtime_config_requires_private_mode_secret():
         settings.auth_enabled = prev_auth_enabled
 
 
+def test_runtime_config_public_v1_requires_auth_and_disables_private_mode():
+    prev_public_v1_mode = settings.public_v1_mode
+    prev_private_mode_enabled = settings.private_mode_enabled
+    prev_auth_enabled = settings.auth_enabled
+    prev_import_sbi_enabled = settings.import_sbi_enabled
+    prev_price_provider = settings.price_provider
+    prev_allow_unofficial_price_source = settings.allow_unofficial_price_source
+
+    try:
+        settings.public_v1_mode = True
+        settings.private_mode_enabled = True
+        settings.auth_enabled = False
+        settings.import_sbi_enabled = True
+        settings.price_provider = "yahoo_unofficial"
+        settings.allow_unofficial_price_source = False
+
+        errors, warnings = get_runtime_config_issues()
+        assert "PRIVATE_MODE_ENABLED must be false when PUBLIC_V1_MODE=true" in errors
+        assert "AUTH_ENABLED must be true when PUBLIC_V1_MODE=true" in errors
+        assert "PRICE_PROVIDER cannot be yahoo_unofficial when ALLOW_UNOFFICIAL_PRICE_SOURCE=false" in errors
+        assert "IMPORT_SBI_ENABLED is true in PUBLIC_V1_MODE (recommended false or beta-only UI)" in warnings
+    finally:
+        settings.public_v1_mode = prev_public_v1_mode
+        settings.private_mode_enabled = prev_private_mode_enabled
+        settings.auth_enabled = prev_auth_enabled
+        settings.import_sbi_enabled = prev_import_sbi_enabled
+        settings.price_provider = prev_price_provider
+        settings.allow_unofficial_price_source = prev_allow_unofficial_price_source
+
+
+def test_prices_api_returns_503_when_disabled(client):
+    prev_price_api_enabled = settings.price_api_enabled
+    try:
+        settings.price_api_enabled = False
+        res = client.get("/api/v1/prices?market=JP&symbol=7203&interval=1d")
+        assert res.status_code == 503
+        assert res.json()["detail"] == "price api is disabled"
+    finally:
+        settings.price_api_enabled = prev_price_api_enabled
+
+
+def test_prices_api_blocks_unofficial_provider_when_disabled(client):
+    prev_price_api_enabled = settings.price_api_enabled
+    prev_price_provider = settings.price_provider
+    prev_allow_unofficial_price_source = settings.allow_unofficial_price_source
+    try:
+        settings.price_api_enabled = True
+        settings.price_provider = "yahoo_unofficial"
+        settings.allow_unofficial_price_source = False
+        res = client.get("/api/v1/prices?market=JP&symbol=7203&interval=1d")
+        assert res.status_code == 503
+        assert res.json()["detail"] == "unofficial price source is disabled"
+    finally:
+        settings.price_api_enabled = prev_price_api_enabled
+        settings.price_provider = prev_price_provider
+        settings.allow_unofficial_price_source = prev_allow_unofficial_price_source
+
+
+def test_import_endpoints_reject_sbi_when_disabled(client):
+    prev_import_sbi_enabled = settings.import_sbi_enabled
+    try:
+        settings.import_sbi_enabled = False
+        res_preview = client.post(
+            "/api/v1/imports/sbi/preview",
+            json={"filename": "sbi.csv", "content": "date,symbol,side,qty,price\n"},
+        )
+        assert res_preview.status_code == 404
+        assert res_preview.json()["detail"] == "unsupported broker"
+
+        res_realized_preview = client.post(
+            "/api/v1/imports/sbi/realized/preview",
+            json={"filename": "sbi_realized.csv", "content": "date,symbol,qty,price,avg_cost,realized_profit\n"},
+        )
+        assert res_realized_preview.status_code == 404
+        assert res_realized_preview.json()["detail"] == "unsupported broker"
+
+        rakuten_preview = client.post(
+            "/api/v1/imports/rakuten-jp/preview",
+            json={"filename": "rakuten.csv", "content": "約定日,銘柄コード,銘柄,売買,約定数量,約定単価,手数料,取引区分\n"},
+        )
+        assert rakuten_preview.status_code == 200
+    finally:
+        settings.import_sbi_enabled = prev_import_sbi_enabled
+
+
 def test_health_endpoints(client):
     res = client.get("/health")
     assert res.status_code == 200
