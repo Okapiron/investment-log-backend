@@ -111,6 +111,20 @@ def _ensure_trade_position_side_column() -> None:
             conn.execute(text("UPDATE trades SET position_side = 'long' WHERE position_side IS NULL OR position_side = ''"))
 
 
+def _ensure_realized_only_trade_columns() -> None:
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        if "trades" not in inspector.get_table_names():
+            return
+
+        cols = {c.get("name") for c in inspector.get_columns("trades")}
+        if "data_quality" not in cols:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN data_quality VARCHAR NOT NULL DEFAULT 'full'"))
+        if "broker_profit_jpy" not in cols:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN broker_profit_jpy NUMERIC(14, 2)"))
+        conn.execute(text("UPDATE trades SET data_quality = 'full' WHERE data_quality IS NULL OR data_quality = ''"))
+
+
 def _ensure_fill_breakdown_columns() -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
@@ -135,6 +149,7 @@ def _run_startup_tasks() -> None:
     _ensure_invite_code_columns()
     _ensure_trade_import_lineage_columns()
     _ensure_trade_position_side_column()
+    _ensure_realized_only_trade_columns()
     _ensure_fill_breakdown_columns()
 
 
